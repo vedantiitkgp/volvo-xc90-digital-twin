@@ -1,0 +1,1182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>XC90 Digital Twin</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0d10; color: #e8eaed; font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
+  #scene { position: absolute; inset: 0; }
+  #hud {
+    position: absolute; top: 12px; left: 12px; width: 300px;
+    background: rgba(15,17,20,0.82); border: 1px solid #2a2e34; border-radius: 10px;
+    padding: 14px 16px; font-size: 13px; backdrop-filter: blur(4px);
+  }
+  #hud h1 { font-size: 15px; margin: 0 0 10px; color: #9fd3ff; }
+  .row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #1c1f24; }
+  .row span:first-child { color: #9aa2ad; }
+  .warn { color: #ff6b6b; font-weight: 600; }
+  .ok { color: #6bdc8f; }
+  #controls { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+  #body-layout { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+  #body-layout button { width: 100%; }
+  button {
+    background: #1c2128; color: #e8eaed; border: 1px solid #333a42; border-radius: 6px;
+    padding: 6px 10px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { background: #262c34; }
+  button.active { background: #35405088; border-color: #6bb0ff; }
+  #hint {
+    position: absolute; bottom: 10px; left: 12px; font-size: 11px; color: #6a7480;
+  }
+  #panel-title { font-size: 11px; color: #6a7480; margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+</style>
+</head>
+<body>
+<div id="scene"></div>
+<div id="hud">
+  <h1>2016 Volvo XC90 T6 — Digital Twin</h1>
+  <div class="row"><span>Ignition</span><span id="v-ignition">—</span></div>
+  <div class="row"><span>Engine RPM</span><span id="v-rpm">—</span></div>
+  <div class="row"><span>Speed</span><span id="v-speed">—</span></div>
+  <div class="row"><span>Gear</span><span id="v-gear">—</span></div>
+  <div class="row"><span>Coolant</span><span id="v-coolant">—</span></div>
+  <div class="row"><span>Fuel</span><span id="v-fuel">—</span></div>
+  <div class="row"><span>Washer fluid</span><span id="v-washer">—</span></div>
+  <div class="row"><span>Sunroof</span><span id="v-sunroof">—</span></div>
+  <div class="row"><span>Main battery</span><span id="v-batt">—</span></div>
+  <div class="row"><span>Support battery</span><span id="v-batt2">—</span></div>
+  <div class="row"><span>Faults</span><span id="v-faults">none</span></div>
+
+  <div id="panel-title">Ignition</div>
+  <div id="controls">
+    <button id="btn-start">Start engine</button>
+    <button id="btn-stop">Stop engine</button>
+  </div>
+
+  <div id="panel-title">Drive</div>
+  <div id="controls">
+    <button id="btn-gear-p">P</button>
+    <button id="btn-gear-r">R</button>
+    <button id="btn-gear-n">N</button>
+    <button id="btn-gear-d">D</button>
+  </div>
+
+  <div id="panel-title">Body</div>
+  <div id="body-layout">
+    <div></div><button id="btn-hood">Toggle hood</button><div></div>
+    <button id="btn-door-fl">Door FL</button><div></div><button id="btn-door-fr">Door FR</button>
+    <div></div><button id="btn-sunroof">Toggle sunroof</button><div></div>
+    <button id="btn-door-rl">Door RL</button><div></div><button id="btn-door-rr">Door RR</button>
+    <div></div><button id="btn-tailgate">Toggle tailgate</button><div></div>
+  </div>
+
+  <div id="panel-title">Teardown</div>
+  <div id="controls">
+    <button id="btn-battery">Disconnect battery</button>
+    <button id="btn-engine">Remove engine</button>
+  </div>
+
+</div>
+<div id="hint">Drag to orbit · scroll to zoom · click parts in the engine bay (open the hood first) · start the engine, brake, shift to D, then arrow keys drive (↑ throttle · ↓ brake · ←→ steer)</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+const API = "";
+const state = { hood_open: false, door_open: {fl:false,fr:false,rl:false,rr:false}, tailgate_open: false,
+                tailgate_target_open: false, tailgate_progress_frac: 1,
+                sunroof_glass_state: "closed", sunroof_glass_target: "closed", sunroof_glass_progress_frac: 1,
+                sunroof_shade_open: false, sunroof_shade_target: false, sunroof_shade_progress_frac: 1,
+                engine_removed: false, battery_disconnected: false, blown_fuses: [], pulled_fuses: [], relay_faults: [],
+                gear_selector: "P", brake_on: false, world_x_m: 0, world_y_m: 0, heading_deg: 0, steering_wheel_deg: 0 };
+
+// ---------- networking ----------
+async function pollState() {
+  try {
+    const r = await fetch(API + "/state");
+    Object.assign(state, await r.json());
+    renderHud();
+    applyState();
+  } catch (e) { /* server not reachable yet */ }
+  setTimeout(pollState, 200);
+}
+async function sendAction(action, extra) {
+  const body = Object.assign({ action }, extra || {});
+  const r = await fetch(API + "/action", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+  const data = await r.json();
+  if (data.ok) { Object.assign(state, data.state); renderHud(); applyState(); }
+}
+
+function renderHud() {
+  document.getElementById("v-ignition").textContent = state.ignition_state ?? "—";
+  document.getElementById("v-rpm").textContent = (state.engine_rpm ?? "—") + " rpm";
+  document.getElementById("v-speed").textContent = (state.speed_mph ?? "—") + " mph";
+  document.getElementById("v-gear").textContent = state.gear_selector + (state.brake_on ? " (braking)" : "");
+  ["p", "r", "n", "d"].forEach((g) => {
+    document.getElementById("btn-gear-" + g).className = state.gear_selector === g.toUpperCase() ? "active" : "";
+  });
+  document.getElementById("v-coolant").textContent = (state.coolant_temp_c ?? "—") + " °C";
+  document.getElementById("v-fuel").textContent = state.fuel_level_frac != null ? Math.round(state.fuel_level_frac*100) + "%" : "—";
+  const washerEl = document.getElementById("v-washer");
+  washerEl.textContent = state.washer_fluid_l != null ? state.washer_fluid_l + " L" : "—";
+  washerEl.className = state.washer_fluid_low_warning ? "warn" : "";
+  const battEl = document.getElementById("v-batt");
+  battEl.textContent = state.battery_disconnected ? "DISCONNECTED" : (state.battery_charge_pct ?? "—") + "%";
+  battEl.className = state.battery_disconnected ? "warn" : "";
+  document.getElementById("v-batt2").textContent = (state.support_battery_charge_pct ?? "—") + "%";
+  const faults = [].concat(
+    state.engine_removed ? ["engine removed"] : [],
+    state.blown_fuses.map(f => "fuse blown: " + f),
+    state.pulled_fuses.map(f => "fuse pulled: " + f),
+    state.relay_faults.map(r => "relay disconnected: " + r),
+  );
+  const faultsEl = document.getElementById("v-faults");
+  faultsEl.textContent = faults.length ? faults.join(", ") : "none";
+  faultsEl.className = faults.length ? "warn" : "ok";
+
+  document.getElementById("btn-battery").textContent = state.battery_disconnected ? "Reconnect battery" : "Disconnect battery";
+  document.getElementById("btn-battery").className = state.battery_disconnected ? "active" : "";
+  document.getElementById("btn-engine").textContent = state.engine_removed ? "Reinstall engine" : "Remove engine";
+  document.getElementById("btn-engine").className = state.engine_removed ? "active" : "";
+
+  document.getElementById("btn-hood").textContent = state.hood_open ? "Close hood" : "Open hood";
+  document.getElementById("btn-hood").className = state.hood_open ? "active" : "";
+
+  const tgMoving = state.tailgate_progress_frac != null && state.tailgate_progress_frac < 1;
+  const btnTailgate = document.getElementById("btn-tailgate");
+  if (tgMoving) btnTailgate.textContent = state.tailgate_target_open ? "Opening tailgate…" : "Closing tailgate…";
+  else btnTailgate.textContent = state.tailgate_open ? "Close tailgate" : "Open tailgate";
+  btnTailgate.className = (state.tailgate_open || tgMoving) ? "active" : "";
+
+  ["fl", "fr", "rl", "rr"].forEach((c) => {
+    const open = state.door_open[c];
+    const btn = document.getElementById("btn-door-" + c);
+    btn.textContent = "Door " + c.toUpperCase() + ": " + (open ? "Open" : "Closed");
+    btn.className = open ? "active" : "";
+  });
+
+  // Real mechanical interlock: opening the glass forces the shade open
+  // first (see xc90_sim.body.Sunroof), so while the glass is opening the
+  // shade is very likely also still mid-travel -- report whichever part is
+  // actually still moving, so the button/HUD reflect the real bottleneck.
+  const glassMoving = state.sunroof_glass_progress_frac != null && state.sunroof_glass_progress_frac < 1;
+  const shadeMoving = state.sunroof_shade_progress_frac != null && state.sunroof_shade_progress_frac < 1;
+  const btnSunroof = document.getElementById("btn-sunroof");
+  const sunroofOpen = state.sunroof_glass_state !== "closed";
+  if (glassMoving || shadeMoving) {
+    btnSunroof.textContent = state.sunroof_glass_target === "open" ? "Opening sunroof…" : "Closing sunroof…";
+  } else {
+    btnSunroof.textContent = sunroofOpen ? "Close sunroof" : "Open sunroof";
+  }
+  btnSunroof.className = (sunroofOpen || glassMoving || shadeMoving) ? "active" : "";
+
+  const sunroofEl = document.getElementById("v-sunroof");
+  sunroofEl.textContent = (glassMoving || shadeMoving)
+    ? (state.sunroof_glass_target === "open" ? "opening…" : "closing…")
+    : state.sunroof_glass_state;
+}
+
+// ---------- buttons ----------
+document.getElementById("btn-start").onclick = () => sendAction("start_engine");
+document.getElementById("btn-stop").onclick = () => sendAction("stop_engine");
+["p", "r", "n", "d"].forEach((g) => {
+  // Real interlock (see xc90_sim.transmission.GearSelector): can't leave
+  // Park without the brake pedal held -- tap the brake as part of the
+  // click, same as a driver holding the brake to shift, rather than the
+  // button silently doing nothing if the brake wasn't already pressed.
+  document.getElementById("btn-gear-" + g).onclick = async () => {
+    await sendAction("set_brake", { on: true });
+    await sendAction("set_gear", { position: g.toUpperCase() });
+  };
+});
+document.getElementById("btn-hood").onclick = () => sendAction("toggle_hood");
+document.getElementById("btn-tailgate").onclick = () => sendAction("toggle_tailgate");
+document.getElementById("btn-sunroof").onclick = () => sendAction("toggle_sunroof");
+["fl","fr","rl","rr"].forEach(c => document.getElementById("btn-door-"+c).onclick = () => sendAction("toggle_door", {corner:c}));
+document.getElementById("btn-battery").onclick = () => sendAction("toggle_battery");
+document.getElementById("btn-engine").onclick = () => sendAction("toggle_engine_removed");
+
+// ---------- three.js scene ----------
+// Real published 2016 XC90 dimensions (checked against Volvo/Cars.com/
+// carsguide specs): overall length 4950mm, width 2008mm (excl. mirrors),
+// height 1776mm, wheelbase 2984mm (also independently confirmed by this
+// project's own specs/chassis.py), min ground clearance 9.3in/236mm.
+// Still a stylized procedural model, not a scanned/licensed 3D asset —
+// no such asset exists to build an exact replica from — but the box is
+// now the real box, not a guessed one.
+const WHEELBASE = 2.984, LENGTH = 4.95, WIDTH = 2.008, HEIGHT = 1.776, GROUND_CLEARANCE = 0.236;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x11141a);
+scene.fog = new THREE.Fog(0x11141a, 20, 90); // pushed out for actual driving distance/speed
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 150);
+let camDist = 7.5, camYaw = 0.7, camPitch = 0.45;
+// Fixed-origin orbit -- see the "floating origin" note near carGroup below
+// for why the car itself never actually moves in render space, even though
+// its real world_x_m/world_y_m from xc90_sim keeps changing while driving.
+function updateCamera() {
+  camera.position.set(
+    camDist * Math.cos(camPitch) * Math.sin(camYaw),
+    camDist * Math.sin(camPitch) + 1.0,
+    camDist * Math.cos(camPitch) * Math.cos(camYaw)
+  );
+  camera.lookAt(0, 0.8, 0);
+}
+// Deferred until after carGroup exists (below) -- calling it here threw
+// "Cannot access 'carGroup' before initialization" since carGroup is a
+// later const in this same script, and referencing it before its own
+// declaration line runs is a hard error, not just undefined.
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+// A glTF model (like the real one loaded below) is authored assuming a
+// specific color-management pipeline -- without this, Three.js renders
+// PBR materials noticeably flat/dark/contrasty by default, which is why
+// even the exterior (not just the unlit-looking engine bay) has read
+// dim from the start. This is the standard, well-known fix.
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.3;
+document.getElementById("scene").appendChild(renderer.domElement);
+
+// Kept lower than the engine bay's own dedicated point lights (below) --
+// this is exterior/ambient-only lighting, so dialing it down brightens the
+// body paint less without touching the engine bay's separately-lit look.
+scene.add(new THREE.HemisphereLight(0xaad4ff, 0x2a2d30, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(6, 10, 4);
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0xbcd6ff, 0.35);
+fill.position.set(-5, 4, -6);
+scene.add(fill);
+
+// Open drivable surface with a lane-marking pattern, not a fixed track --
+// the real steering input can turn any direction, so a single road curve
+// isn't a real constraint here. A tiled canvas texture reads as pavement +
+// lane markings without needing an actual road-network geometry.
+function buildRoadTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#2a2d31";
+  ctx.fillRect(0, 0, 128, 128);
+  ctx.fillStyle = "#d8d8d0";
+  ctx.fillRect(60, 12, 8, 40);
+  ctx.fillRect(60, 76, 8, 40);
+  return new THREE.CanvasTexture(canvas);
+}
+const roadTexture = buildRoadTexture();
+roadTexture.wrapS = roadTexture.wrapT = THREE.RepeatWrapping;
+const ROAD_REPEAT = 150;
+roadTexture.repeat.set(ROAD_REPEAT, ROAD_REPEAT);
+const GROUND_SIZE = 1200; // large enough that the scrolling texture (below) never visibly wraps during normal driving
+const ROAD_TILE_SIZE_M = GROUND_SIZE / ROAD_REPEAT; // meters per texture repeat, for scrolling it by real distance traveled
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
+  new THREE.MeshStandardMaterial({ map: roadTexture, roughness: 1 })
+);
+ground.rotation.x = -Math.PI / 2;
+scene.add(ground);
+
+// Floating origin: the car's mesh (with all its fine local detail -- door
+// gaps, trim lines, stitching) never actually moves in render/world space,
+// even though xc90_sim's own real world_x_m/world_y_m keeps changing while
+// driving. WebGL's vertex math is 32-bit float; once a translated object's
+// position reaches the hundreds/thousands of meters, that precision loss
+// visibly corrupts fine local geometry -- doors and trim panels rendering
+// detached and scattered from the body, which is exactly what happened
+// here after the sim was accidentally left driving in the background for a
+// while during testing (world_x_m had drifted past -2000). Instead, the
+// GROUND's texture scrolls beneath the car (see applyState() below) to
+// give the same visual sense of movement without ever moving the actual
+// car mesh far from the origin.
+const carGroup = new THREE.Group();
+scene.add(carGroup);
+updateCamera();
+
+const trimMat = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.85 });
+const batteryMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6 });
+
+// ============================================================
+// Real, licensed 3D model (Sketchfab "Volvo XC90 Inscription" kit —
+// free-standard license, dropped in by the user at static/models/).
+// This is a genuine detailed asset with real named mechanical parts
+// (engine_i4, turbo_i4, transmission, transfercase, radiator, radfan1/2,
+// intercooler, halfshaft_F/R, swaybar_F/R, strut_front, wishbone_R,
+// hood/door_FL/FR/RL/RR/tailgate, wheel+tire x4, Thor's Hammer headlight
+// sub-parts, etc.) — replacing the earlier procedural box/extrusion body.
+//
+// The kit bundles MULTIPLE TRIMS/OPTIONS in one file (Momentum/Inscription/
+// R-Design/T8-hybrid variants of the same part all present at once, no
+// visibility metadata to pick one automatically) — this project's real car
+// is a 2016 XC90 T6 MOMENTUM (gas, non-hybrid, non-R-Design), so
+// inscription/hybrid/R-Design-specific nodes are hidden by name pattern
+// below. The wheel design ("wheel_inscription") isn't actually trim-variant
+// named in this kit (it's the only wheel/tire option included), so it's
+// explicitly excluded from that filter.
+//
+// The asset's own scale/orientation/pivot points aren't known in advance,
+// so this auto-scales to this project's real published length (4.95m,
+// checked against Volvo/Cars.com specs), auto-centers at the wheel
+// contact patches, and derives a real "forward" direction from the
+// model's own xc90_bumper_F vs xc90_bumper_R positions (rather than
+// assuming a fixed axis) to hinge the hood/doors/tailgate correctly
+// regardless of how the model was authored. This is a best-effort BLIND
+// integration (no way to render a browser here to check it) — hinge
+// directions/angles are the most likely thing to need a one-line sign
+// flip once actually seen; say what looks wrong and it's a quick fix.
+// ============================================================
+
+function shouldHideNode(name) {
+  if (!name) return false;
+  if (name.indexOf("wheel_inscription") !== -1 || name.indexOf("cx7_tire") !== -1) return false;
+  // This kit bundles both a plain roof/headliner ("xc90_ceiling", plus a
+  // redundant duplicate "xc90_ceiling2") and a panoramic-sunroof roof
+  // ("xc90_ceiling_pano") -- both were rendering at once, unfiltered,
+  // which is part of why the cabin ceiling looked wrong. The real car has
+  // the panoramic sunroof, so only that variant should stay visible.
+  if (name === "xc90_ceiling" || name === "xc90_ceiling2") return true;
+  // Same bundling issue on the body shell itself: a plain-roof body
+  // ("xc90_body") and a panoramic-roof body ("xc90_body_pano") were both
+  // rendering at once, nearly coincident -- a real z-fighting/double-
+  // exposure bug that was very likely the actual cause of the exterior
+  // paint reading washed-out/too light, not just scene light intensity.
+  // The real car has the panoramic sunroof, so keep only body_pano, and
+  // drop the separate solid roof panel that only belongs with the plain body.
+  if (name === "xc90_body" || name === "xc90_plain_roof") return true;
+  return /_inscription|_hybrid|_rdesign|engbay_old/.test(name);
+}
+
+function findByName(root, name) {
+  let found = null;
+  root.traverse((obj) => { if (obj.name === name) found = obj; });
+  return found;
+}
+
+// Placeholder pivots, created up front so applyState()/picking are always
+// safe to call even before (or if) the GLB finishes loading — repositioned
+// and populated with the real meshes once the load callback runs.
+const hoodGroup = new THREE.Group();
+const tailgateGroup = new THREE.Group();
+const doorHinges = { fl: new THREE.Group(), fr: new THREE.Group(), rl: new THREE.Group(), rr: new THREE.Group() };
+carGroup.add(hoodGroup, tailgateGroup, doorHinges.fl, doorHinges.fr, doorHinges.rl, doorHinges.rr);
+let widthAxis = "z"; // which local axis hood/tailgate hinge around — recomputed from the real model below
+let widthAxisVector = new THREE.Vector3(0, 0, 1); // real geometry-derived hinge axis — see below; used for actual rotation, not just sign detection
+let sunroofAxis = "x"; // which local axis the sunroof glass/shade slide along — same as forwardAxis, recomputed below
+let sunroofSign = 1; // which direction along that axis is "backward" (toward the tailgate) — recomputed below
+let sunroofSlideLen = 0.4; // real roof-opening length along sunroofAxis, used as the full open-slide distance — recomputed below
+let sunroofGlassBaseY = 0.0; // glass height at the CLOSED position — recomputed below
+let sunroofShadeBaseY = 0.0; // shade height at the CLOSED position — recomputed below
+const sunroofDropAmount = 0.01; // how far the panels drop below roof height as they retract, to tuck under the fixed metal roof
+const sunroofTiltAxis = new THREE.Vector3(1, 0, 0); // local width axis the front-dip curve tilts around — recomputed below
+let sunroofTiltRad = 0; // full closed-position tilt angle (signed) — recomputed below; eased to 0 as the panel opens, in applyState()
+let realEngineNode = null;
+const clickableObjects = [];
+
+// Engine bay overlay: fuse box + relay box + a stand-in battery — this
+// kit has no discrete battery mesh, and no fuse/relay box mesh at all, so
+// these stay procedural, just repositioned against the real model's own
+// engine bay location once it's found below.
+const engineBay = new THREE.Group();
+carGroup.add(engineBay);
+
+const battery = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.2, 0.16), batteryMat);
+battery.position.set(0.35, -0.05, 0.35);
+battery.userData = { action: "toggle_battery" };
+engineBay.add(battery);
+clickableObjects.push(battery);
+
+const fuseBoxGroup = new THREE.Group();
+fuseBoxGroup.position.set(-0.25, 0.05, 0.42);
+const fuseHousing = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.06, 0.24), trimMat);
+fuseBoxGroup.add(fuseHousing);
+const FUSE_NAMES = ["headlights","wipers","horn","fuel_pump","cooling_fan","dome_light","infotainment","ecu_main"];
+const fuseStuds = {};
+FUSE_NAMES.forEach((name, i) => {
+  const col = i % 4, row = Math.floor(i / 4);
+  const stud = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.02, 0.02, 0.05, 10),
+    new THREE.MeshStandardMaterial({ color: 0x3399ff })
+  );
+  stud.position.set(-0.13 + col * 0.09, 0.05, -0.07 + row * 0.14);
+  stud.userData = { action: "toggle_fuse", name };
+  fuseBoxGroup.add(stud);
+  fuseStuds[name] = stud;
+  clickableObjects.push(stud);
+});
+engineBay.add(fuseBoxGroup);
+
+const relayBoxGroup = new THREE.Group();
+relayBoxGroup.position.set(-0.25, 0.05, 0.12);
+const relayHousing = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.05, 0.2), trimMat);
+relayBoxGroup.add(relayHousing);
+const RELAY_NAMES = ["fuel_pump","starter","cooling_fan","horn","main_ecu"];
+const relayStuds = {};
+RELAY_NAMES.forEach((name, i) => {
+  const stud = new THREE.Mesh(
+    new THREE.BoxGeometry(0.045, 0.05, 0.045),
+    new THREE.MeshStandardMaterial({ color: 0xffaa33 })
+  );
+  stud.position.set(-0.11 + i * 0.055, 0.05, 0);
+  stud.userData = { action: "toggle_relay", name };
+  relayBoxGroup.add(stud);
+  relayStuds[name] = stud;
+  clickableObjects.push(stud);
+});
+engineBay.add(relayBoxGroup);
+
+// Dedicated engine-bay light: the scene's ambient/directional lighting
+// doesn't reach into this recessed, mostly-enclosed space well enough to
+// see anything once the hood is open -- a real garage/service light,
+// effectively, and it rides along with engineBay's own visibility toggle
+// (on only while the hood is actually open) and position (set to the
+// real engine's location once the model loads, below).
+const engineBayLight = new THREE.PointLight(0xfff4e0, 6.0, 4.0, 1.3);
+engineBayLight.position.set(0, 0.55, 0.15);
+engineBay.add(engineBayLight);
+// A second, softer fill from the opposite side so surfaces facing away
+// from the main light (e.g. the engine cover facing the firewall) don't
+// stay pure black.
+const engineBayFill = new THREE.PointLight(0xdde8ff, 3.0, 3.5, 1.3);
+engineBayFill.position.set(0.1, 0.3, -0.3);
+engineBay.add(engineBayFill);
+
+// Real named parts this kit doesn't include as its own meshes -- added
+// procedurally, same reasoning as the fuse/relay box above. Brake fluid
+// and coolant reservoir levels aren't separately tracked by xc90_sim
+// (only washer fluid has real simulated state -- see below), so those
+// two are visual/positional only, honestly not wired to live data.
+const brakeFluidCap = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.045, 0.05, 0.09, 12),
+  new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6 })
+);
+brakeFluidCap.position.set(0.05, 0.22, -0.32);
+engineBay.add(brakeFluidCap);
+
+const coolantReservoir = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.055, 0.06, 0.12, 12),
+  new THREE.MeshStandardMaterial({ color: 0xdd8833, transparent: true, opacity: 0.55, roughness: 0.3 })
+);
+coolantReservoir.position.set(-0.05, 0.18, 0.38);
+engineBay.add(coolantReservoir);
+
+// Washer fluid reservoir -- this ONE is real, connected data: xc90_sim
+// actually tracks washer fluid level/low-warning (see
+// xc90_sim.body.WasherFluid) and supports a real refill() call. Click it
+// to top it off, same as every other real interaction in this scene.
+const washerFluidGroup = new THREE.Group();
+washerFluidGroup.position.set(0.42, 0.05, -0.28);
+const washerFluidBody = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.09, 0.11, 0.22, 14),
+  new THREE.MeshStandardMaterial({ color: 0x3388cc, transparent: true, opacity: 0.6, roughness: 0.3 })
+);
+washerFluidGroup.add(washerFluidBody);
+const washerFluidCap = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.035, 0.035, 0.05, 10),
+  new THREE.MeshStandardMaterial({ color: 0x2255aa, roughness: 0.5 })
+);
+washerFluidCap.position.y = 0.135;
+washerFluidGroup.add(washerFluidCap);
+washerFluidGroup.userData = { action: "refill_washer_fluid" };
+engineBay.add(washerFluidGroup);
+clickableObjects.push(washerFluidBody, washerFluidCap);
+
+// PCV valve -- a small grommet on top of the valve cover.
+const pcvValve = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.025, 0.03, 0.06, 10),
+  new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.7 })
+);
+pcvValve.position.set(-0.15, 0.24, -0.05);
+engineBay.add(pcvValve);
+
+// Upper/lower radiator hoses -- simple curved tubes bridging the engine
+// (this overlay's local origin) toward the real radiator's position,
+// found once the model loads below.
+const hoseMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 });
+function buildHose(from, to, radius) {
+  const curve = new THREE.CatmullRomCurve3([
+    from, new THREE.Vector3((from.x + to.x) / 2, Math.max(from.y, to.y) + 0.08, (from.z + to.z) / 2), to,
+  ]);
+  return new THREE.Mesh(new THREE.TubeGeometry(curve, 12, radius, 8, false), hoseMat);
+}
+const upperHose = buildHose(new THREE.Vector3(-0.1, 0.15, 0.1), new THREE.Vector3(-0.1, 0.15, 0.55), 0.02);
+const lowerHose = buildHose(new THREE.Vector3(-0.15, -0.05, 0.1), new THREE.Vector3(-0.15, -0.05, 0.55), 0.022);
+engineBay.add(upperHose, lowerHose);
+
+// Panoramic sunroof: xc90_sim.body.Sunroof is real (timed glass + shade
+// actuation with a real mechanical interlock -- see server.py), but this
+// kit's GLB has no separate movable glass/shade geometry at all -- the
+// pano roof cutout is baked as static, non-moving trim. So the glass pane
+// and shade panel are procedural stand-ins, same reasoning as the fuse box
+// and battery above, sized/positioned against the real roof opening
+// (xc90_ceiling_pano's bounding box) once the model loads below, and
+// slid open/closed by the real backend's timed progress fraction.
+const sunroofGroup = new THREE.Group();
+carGroup.add(sunroofGroup);
+const sunroofGlass = new THREE.Mesh(
+  new THREE.BoxGeometry(1, 0.02, 1),
+  new THREE.MeshStandardMaterial({ color: 0x1a2a33, transparent: true, opacity: 0.55, roughness: 0.1, metalness: 0.2 })
+);
+sunroofGroup.add(sunroofGlass);
+const sunroofShade = new THREE.Mesh(
+  new THREE.BoxGeometry(1, 0.015, 1),
+  new THREE.MeshStandardMaterial({ color: 0xe8dfc8, roughness: 0.85 })
+);
+sunroofGroup.add(sunroofShade);
+
+const gltfLoader = new THREE.GLTFLoader();
+gltfLoader.load("static/models/volvo_xc90_inscription.glb", (gltf) => {
+  const root = gltf.scene;
+  root.traverse((obj) => { if (shouldHideNode(obj.name)) obj.visible = false; });
+
+  // Auto-scale to this project's real published length, then drop the
+  // lowest point (tire contact patches) to y=0 and center X/Z at origin.
+  let box = new THREE.Box3().setFromObject(root);
+  let size = box.getSize(new THREE.Vector3());
+  const scale = LENGTH / Math.max(size.x, size.y, size.z);
+  root.scale.setScalar(scale);
+  box = new THREE.Box3().setFromObject(root);
+  root.position.x -= (box.min.x + box.max.x) / 2;
+  root.position.z -= (box.min.z + box.max.z) / 2;
+  root.position.y -= box.min.y;
+  carGroup.add(root);
+
+  // Interior recolor: gold leather with black stitching/outline detail,
+  // plus real wood-trim inserts on the dash/console, each door's upper
+  // panel (above the latch/handle line), and the steering wheel -- using
+  // this kit's actual material-variant submeshes (each cloned first so
+  // recoloring one part doesn't affect other meshes sharing the same
+  // material instance). This MUST run here, before any hinge reparenting
+  // below moves door/tailgate children out of root's subtree -- findByName
+  // only searches root, so recoloring a door's wood submesh after that
+  // door has already been reparented under its hinge group would silently
+  // find nothing (the real bug behind "door doesn't have wood trim").
+  const GOLD = 0xd4af37;
+  const OUTLINE_BLACK = 0x0a0a0a;
+  const WOOD = 0x3b2414;
+
+  function recolorMesh(name, color) {
+    const node = findByName(root, name);
+    if (!node) return;
+    node.traverse((obj) => {
+      if (obj.isMesh && obj.material && !Array.isArray(obj.material) && obj.material.color) {
+        obj.material = obj.material.clone();
+        obj.material.color.set(color);
+      }
+    });
+  }
+
+  // Front seats plus the rest of the cabin's leather surfaces (rear seat,
+  // dash padding, console) -- this kit bakes all of those into one real
+  // "_leather_0" submesh per node. Also each seat's real "_perf_0"
+  // (perforated leather bolster insert) and each door's own "_leather_0"
+  // (the armrest/lower door-card panel, below the wood trim strip) -- both
+  // were left at this kit's default near-white base color until now, which
+  // is exactly the "still white" patches reported on the seats and doors.
+  ["xc90_seat_FL_xc90_leather_0", "xc90_seat_FR_xc90_leather_0", "xc90_interior_xc90_leather_0",
+   "xc90_seat_FL_xc90_perf_0", "xc90_seat_FR_xc90_perf_0",
+   "xc90_door_FL_xc90_leather_0", "xc90_door_FR_xc90_leather_0",
+   "xc90_door_RL_xc90_leather_0", "xc90_door_RR_xc90_leather_0",
+   "xc90_door_FL_xc90_perf_0", "xc90_door_FR_xc90_perf_0",
+   "xc90_door_RL_xc90_perf_0", "xc90_door_RR_xc90_perf_0",
+   // The rear seat's own cushion is already covered by
+   // xc90_interior_xc90_leather_0 above; its perforated bolster insert is
+   // this separate cabin-wide "_perf_0" submesh, still at default white.
+   "xc90_interior_xc90_perf_0",
+   // Floor carpet (front + rear cabin AND boot floor, one combined mesh in
+   // this kit) plus the boot's own parcel-shelf trim -- both still white.
+   "xc90_interior_xc90_carpet_0", "xc90_shelf_xc90_carpet_0",
+   // The panoramic-roof headliner fabric and its leather edge trim (the
+   // real "upper interior" reported as still white -- this kit's own
+   // ceiling/roof geometry is a separate mesh from xc90_interior, never
+   // touched until now).
+   "xc90_ceiling_pano_xc90_ceiling_0", "xc90_ceiling_pano_xc90_leather_0"]
+    .forEach((n) => recolorMesh(n, GOLD));
+
+  // Black outline/piping: the kit's real stitch-line submesh, per seat and
+  // for the rest of the cabin, including the headliner's own stitch line.
+  // Also the seatbelt webbing (one shared mesh for all belts in this kit),
+  // which is real-world black on this car and was still default white.
+  ["xc90_seat_FL_xc90_stitches_0", "xc90_seat_FR_xc90_stitches_0", "xc90_interior_xc90_stitches_0",
+   "xc90_ceiling_pano_xc90_stitches_0", "xc90_interior_xc90_belt_0"]
+    .forEach((n) => recolorMesh(n, OUTLINE_BLACK));
+
+  // Wood trim: dash/console plus each door's real wood-insert submesh
+  // (this kit already models it on the upper door panel, above the
+  // latch/handle line). The steering wheel has no dedicated wood submesh
+  // in this asset (only leather/plastic/chrome) -- its center-spoke
+  // plastic submesh is the closest real stand-in for a wood insert there.
+  ["xc90_door_FL_xc90_wood_0", "xc90_door_FR_xc90_wood_0",
+   "xc90_door_RL_xc90_wood_0", "xc90_door_RR_xc90_wood_0", "xc90_steeringwheel_xc90_plastic_0"]
+    .forEach((n) => recolorMesh(n, WOOD));
+
+  // The dash/console wood mesh is broad and near-horizontal, so it catches
+  // far more of the overhead sun/hemisphere light than the door inserts or
+  // the steering-wheel spoke -- same base color, brighter render. Emissive
+  // can only ADD light, not remove it, so the only real way to pull its
+  // rendered brightness down to match is a darker base color for this one
+  // mesh specifically (a deliberate compensation, not the "true" wood
+  // color -- traded lighting realism for cross-part visual consistency).
+  recolorMesh("xc90_interior_xc90_wood_0", 0x1f130a);
+
+  // The steering wheel's own grip/rim leather (distinct from the badge
+  // chrome and wood spoke already handled) was still this kit's default
+  // white -- a real wheel wrap is black leather, matching the black-outline
+  // accents already used on the seats.
+  recolorMesh("xc90_steeringwheel_xc90_leather_0", 0x1a1a1a);
+
+  // Darken every real body-paint submesh (exterior panels, door skins, the
+  // mirror housings, the roof underside as seen from inside) by material
+  // NAME rather than a hardcoded node list -- this kit reuses one "xc90_paint"
+  // material across dozens of separate per-panel meshes, so matching by name
+  // (cloning each mesh's own material first) reliably reaches all of them
+  // without having to enumerate every panel by hand.
+  function darkenMaterialByName(matName, factor) {
+    root.traverse((obj) => {
+      if (obj.isMesh && obj.material && !Array.isArray(obj.material) && obj.material.name === matName) {
+        obj.material = obj.material.clone();
+        obj.material.color.multiplyScalar(factor);
+      }
+    });
+  }
+  darkenMaterialByName("xc90_paint", 0.75);
+
+  // Mirror glass (side mirrors + the pano headliner's rearview mirror) was
+  // this kit's flat, non-metallic gray -- boosting metalness/lowering
+  // roughness plus a cooler silver tint reads as a proper mirror surface
+  // under this scene's directional lights (there's no environment/cubemap
+  // reflection probe here, so it won't show true reflections, but this is
+  // the honest amount of "silver mirror" achievable without adding one).
+  root.traverse((obj) => {
+    if (obj.isMesh && obj.material && !Array.isArray(obj.material) && obj.material.name === "mirror") {
+      obj.material = obj.material.clone();
+      obj.material.color.set(0xd8dce0);
+      obj.material.metalness = 0.9;
+      obj.material.roughness = 0.15;
+    }
+  });
+
+  // Same non-metallic-flat-white issue on "xc90_chrome" (door handle trim,
+  // window surrounds, steering-wheel chrome ring, body/tailgate trim -- one
+  // shared material, so this single pass covers the door AND the steering
+  // wheel's remaining white portions at once) and on the wheel rim's own
+  // "xc90_janta.001" material (the visible alloy wheel face -- "tire side").
+  // Neither had any metalness at all despite the names.
+  function makeMetallic(matName, color, metalness, roughness) {
+    root.traverse((obj) => {
+      if (obj.isMesh && obj.material && !Array.isArray(obj.material) && obj.material.name === matName) {
+        obj.material = obj.material.clone();
+        obj.material.color.set(color);
+        obj.material.metalness = metalness;
+        obj.material.roughness = roughness;
+      }
+    });
+  }
+  makeMetallic("xc90_chrome", 0xd9d9d9, 0.9, 0.2);
+  makeMetallic("xc90_janta.001", 0xb8b8b8, 0.85, 0.3);
+  // Remaining flat-white, non-metallic materials on the doors (speaker
+  // grille mesh) and steering wheel (center badge/logo) -- real speaker
+  // grilles and badges are metallic, not matte plastic. Left the icon-
+  // glyph materials (xc90_symbols/xc90_symbols2 -- button/switch labels)
+  // alone since those are printed graphics, not metal parts.
+  // Brightened toward true silver (higher metalness, lower roughness, cooler
+  // tint) rather than the flatter mid-grey these started at, per feedback.
+  makeMetallic("xc90_speakers", 0xd4d7db, 0.92, 0.18);
+  makeMetallic("xc90_speakers2", 0xd4d7db, 0.92, 0.18);
+  makeMetallic("xc90_logos", 0xe0e2e5, 0.95, 0.12);
+
+  // Three.js only recomputes matrixWorld once per rendered frame -- but
+  // everything below (Box3.setFromObject, getWorldPosition/Quaternion/
+  // Scale for every hinge) runs synchronously right now, before any frame
+  // has rendered since the scale/position changes just above. Without
+  // this forced update, every one of those calls would read STALE
+  // pre-scale/pre-move matrices -- the actual root cause of the hood and
+  // doors both hinging in the wrong place.
+  root.updateMatrixWorld(true);
+
+  // Which axis is the car's LENGTH axis is determined from the model's
+  // own overall shape, not from two individual part positions (a real
+  // car is ~4.95m long x ~2.0m wide -- length is always the larger
+  // extent, regardless of how this particular model was authored/
+  // oriented -- far more robust than inferring axis identity from a
+  // single pair of points, which got this backwards the first time:
+  // it correctly found bumper_F/bumper_R's offset direction, but that
+  // offset can be small relative to noise/skew on the "wrong" axis for
+  // a specific model, flipping which axis looked larger).
+  const forwardAxis = size.x >= size.z ? "x" : "z";
+  widthAxis = forwardAxis === "x" ? "z" : "x";
+
+  // Sign only (which END of that axis is the front) still comes from the
+  // model's own real bumper_F vs bumper_R positions.
+  const bumperF = findByName(root, "xc90_bumper_F");
+  const bumperR = findByName(root, "xc90_bumper_R");
+  let forwardSign = 1;
+  if (bumperF && bumperR) {
+    const pF = bumperF.getWorldPosition(new THREE.Vector3());
+    const pR = bumperR.getWorldPosition(new THREE.Vector3());
+    forwardSign = Math.sign(pF[forwardAxis] - pR[forwardAxis]) || 1;
+  }
+
+  // The REAL rotation axis for hood/tailgate hinges -- derived from the
+  // model's own left (FL) vs right (FR) door positions, a genuine
+  // symmetric pair, rather than assumed to be a pure world X/Z direction.
+  // A tilted/skewed hinge motion (car opens diagonally instead of
+  // straight up) means the model has some inherent yaw in the scene that
+  // a plain "x" or "z" axis doesn't actually capture -- this fixes that
+  // regardless of how much yaw there is, rather than guessing it's zero.
+  widthAxisVector = new THREE.Vector3(widthAxis === "x" ? 1 : 0, 0, widthAxis === "z" ? 1 : 0);
+  const doorFLForAxis = findByName(root, "xc90_door_FL");
+  const doorFRForAxis = findByName(root, "xc90_door_FR");
+  if (doorFLForAxis && doorFRForAxis) {
+    const pFL = new THREE.Box3().setFromObject(doorFLForAxis).getCenter(new THREE.Vector3());
+    const pFR = new THREE.Box3().setFromObject(doorFRForAxis).getCenter(new THREE.Vector3());
+    widthAxisVector = new THREE.Vector3().subVectors(pFL, pFR).normalize();
+  }
+  console.log("[XC90 debug] widthAxisVector=" + JSON.stringify(widthAxisVector));
+
+  function reparentPreservingWorldTransform(pivotGroup, pivotPos, mesh) {
+    const worldPos = mesh.getWorldPosition(new THREE.Vector3());
+    const worldQuat = mesh.getWorldQuaternion(new THREE.Quaternion());
+    const worldScale = mesh.getWorldScale(new THREE.Vector3());
+    mesh.parent.remove(mesh);
+    pivotGroup.add(mesh);
+    mesh.position.copy(worldPos).sub(pivotPos);
+    mesh.quaternion.copy(worldQuat);
+    mesh.scale.copy(worldScale);
+  }
+
+  function attachHinge(pivotGroup, mesh, edgeMode, desiredDir) {
+    const box3 = new THREE.Box3().setFromObject(mesh);
+    const pivotPos = box3.getCenter(new THREE.Vector3());
+    const farPos = box3.getCenter(new THREE.Vector3());
+    if (edgeMode === "rear") {
+      pivotPos[forwardAxis] = forwardSign > 0 ? box3.min[forwardAxis] : box3.max[forwardAxis];
+      farPos[forwardAxis] = forwardSign > 0 ? box3.max[forwardAxis] : box3.min[forwardAxis];
+    }
+    if (edgeMode === "front") {
+      pivotPos[forwardAxis] = forwardSign > 0 ? box3.max[forwardAxis] : box3.min[forwardAxis];
+      farPos[forwardAxis] = forwardSign > 0 ? box3.min[forwardAxis] : box3.max[forwardAxis];
+    }
+    if (edgeMode === "top") {
+      // The real hinge is where the tailgate meets the FIXED roof -- the
+      // panel's own top-AND-front-most corner (closer to the cabin), not
+      // its horizontal center. The free edge (near the bumper) is the
+      // opposite corner: bottom-and-rear-most. Previously this only set
+      // pivotPos.y, leaving the front-back position at the panel's own
+      // center -- off the true hinge line whenever the panel isn't
+      // perfectly flat/thin along that axis.
+      pivotPos.y = box3.max.y;
+      pivotPos[forwardAxis] = forwardSign > 0 ? box3.max[forwardAxis] : box3.min[forwardAxis];
+      farPos.y = box3.min.y;
+      farPos[forwardAxis] = forwardSign > 0 ? box3.min[forwardAxis] : box3.max[forwardAxis];
+    }
+
+    pivotGroup.position.copy(pivotPos);
+    pivotGroup.userData.pivotPos = pivotPos;
+    reparentPreservingWorldTransform(pivotGroup, pivotPos, mesh);
+
+    // Determine which rotation SIGN actually swings the free edge toward
+    // desiredDir ("up" for a hood/tailgate, "away from the vehicle
+    // centerline" for a door) -- derived from the real geometry via the
+    // hinge-axis cross product, not a hardcoded guess. A wrong hardcoded
+    // sign swings the panel INTO the body/ground instead of open, which
+    // reads as the part simply vanishing (exactly the bug being fixed here).
+    const axisVec = edgeMode === "front" ? new THREE.Vector3(0, 1, 0) : widthAxisVector;
+    const r = new THREE.Vector3().subVectors(farPos, pivotPos);
+    const swingDir = new THREE.Vector3().crossVectors(axisVec, r);
+    pivotGroup.userData.openSign = Math.sign(swingDir.dot(desiredDir)) || 1;
+  }
+
+  // Attach any additional real sibling parts (glass, chrome trim) that
+  // belong to an already-hinged panel but aren't its children in this
+  // model's own scene graph (this kit modeled door/tailgate glass as
+  // independent top-level nodes, presumably for separate material
+  // control) -- without this, opening a door swings the panel but leaves
+  // its window glass floating in the closed position.
+  function attachSiblingParts(pivotGroup, names) {
+    names.forEach((name) => {
+      const node = findByName(root, name);
+      if (node) reparentPreservingWorldTransform(pivotGroup, pivotGroup.userData.pivotPos, node);
+    });
+  }
+
+  console.log("[XC90 debug] forwardAxis=" + forwardAxis + " forwardSign=" + forwardSign + " widthAxis=" + widthAxis);
+
+  const UP = new THREE.Vector3(0, 1, 0);
+  // A tailgate hinged at the roofline starts with its free (bottom) edge
+  // directly BELOW the pivot -- rotating that around widthAxis has a
+  // mathematically guaranteed ZERO initial vertical velocity (like a
+  // pendulum at the bottom of its arc), so testing against UP is
+  // degenerate for this specific hinge (dot product = 0, sign detection
+  // silently fell back to an arbitrary default rather than a real
+  // derivation). The non-degenerate, physically real direction here is
+  // FORWARD: a real liftgate's free edge swings up AND forward, tucking
+  // toward the roof -- test against that instead.
+  const FORWARD = new THREE.Vector3(forwardAxis === "x" ? forwardSign : 0, 0, forwardAxis === "z" ? forwardSign : 0);
+  const hoodNode = findByName(root, "xc90_hood");
+  if (hoodNode) {
+    const hoodBoxBefore = new THREE.Box3().setFromObject(hoodNode);
+    attachHinge(hoodGroup, hoodNode, "rear", UP);
+    console.log("[XC90 debug] hood box before (world) min=" + JSON.stringify(hoodBoxBefore.min) + " max=" + JSON.stringify(hoodBoxBefore.max));
+    console.log("[XC90 debug] hood pivotPos=" + JSON.stringify(hoodGroup.position) + " openSign=" + hoodGroup.userData.openSign);
+  }
+
+  const tailgateNode = findByName(root, "xc90_tailgate");
+  if (tailgateNode) {
+    attachHinge(tailgateGroup, tailgateNode, "top", FORWARD);
+    attachSiblingParts(tailgateGroup, [
+      "xc90_tailgateglass", "xc90_tailgate_chmslglass", "xc90_tailgate_chmsl",
+      "xc90_lettering_volvo", "xc90_lettering_xc90", "xc90_wiper_R",
+    ]);
+    console.log("[XC90 debug] tailgate pivotPos=" + JSON.stringify(tailgateGroup.position) + " openSign=" + tailgateGroup.userData.openSign);
+  }
+
+  [["fl", "xc90_door_FL"], ["fr", "xc90_door_FR"], ["rl", "xc90_door_RL"], ["rr", "xc90_door_RR"]].forEach(([corner, name]) => {
+    const node = findByName(root, name);
+    if (!node) return;
+    // Doors should swing OUTWARD (away from the vehicle centerline) -- an
+    // unambiguous physical criterion computed from which side of center
+    // this specific door actually sits, rather than assumed left/right naming.
+    const centerCoord = new THREE.Box3().setFromObject(node).getCenter(new THREE.Vector3())[widthAxis];
+    const outward = new THREE.Vector3(
+      widthAxis === "x" ? Math.sign(centerCoord) || 1 : 0,
+      0,
+      widthAxis === "z" ? Math.sign(centerCoord) || 1 : 0
+    );
+    attachHinge(doorHinges[corner], node, "front", outward);
+    const suffix = name.slice("xc90_door_".length); // "FL"/"FR"/"RL"/"RR"
+    // GLTFLoader strips periods when it sanitizes node names, so this kit's
+    // "xc90_doorglass_RL.001"/".002" (confirmed present in the GLB's own
+    // JSON) come out as "xc90_doorglass_RL001"/"RL002" at runtime -- no dot.
+    // Using the dotted form here silently found nothing for either black
+    // window-divider piece on every door, not just the one reported stuck.
+    const siblingNames = [
+      "xc90_doorglass_" + suffix, "xc90_doorglass_" + suffix + "001", "xc90_doorglass_" + suffix + "002",
+      "xc90_door_" + suffix + "_trim_chrome",
+    ];
+    attachSiblingParts(doorHinges[corner], siblingNames);
+  });
+
+
+  // Real engine assembly — toggling its own visibility on "remove engine"
+  // instead of a primitive stand-in box.
+  realEngineNode = findByName(root, "xc90_engine_i4");
+  const turboNode = findByName(root, "xc90_turbo_i4");
+  const engineClickTargets = [realEngineNode, turboNode].filter(Boolean);
+  engineClickTargets.forEach((n) => { n.userData = { action: "toggle_engine_removed" }; clickableObjects.push(n); });
+
+  // Use the engine's actual bounding-box CENTER, not its raw transform
+  // origin (getWorldPosition()) -- that origin is an arbitrary authored
+  // pivot point (e.g. the crank centerline), which sits low enough that
+  // the fuse/relay-box overlay ended up positioned below the car.
+  const engineAnchor = realEngineNode
+    ? new THREE.Box3().setFromObject(realEngineNode).getCenter(new THREE.Vector3())
+    : new THREE.Vector3(LENGTH * 0.2, 0.5, 0);
+  engineBay.position.copy(engineAnchor);
+
+  // Position/size the procedural sunroof glass+shade against the real roof
+  // opening. The headliner fabric mesh spans the ENTIRE cabin roof (front
+  // header to cargo area), not just the sunroof cutout -- using its full
+  // bounding box directly (first attempt) made the glass pane roughly as
+  // long as the whole roof, so it stuck out past the actual roofline once
+  // slid open. A real panoramic glass panel only covers roughly the front
+  // 40% of that span (leaving a header strip up front and a fixed rear
+  // section it slides back to nest under), so derive the panel from a
+  // fraction of the real headliner span instead of using it directly.
+  const ceilingFabric = findByName(root, "xc90_ceiling_pano_xc90_ceiling_0");
+  if (ceilingFabric) {
+    const roofBox = new THREE.Box3().setFromObject(ceilingFabric);
+    const cabinRoofLen = roofBox.max[forwardAxis] - roofBox.min[forwardAxis];
+    const frontEdge = forwardSign > 0 ? roofBox.max[forwardAxis] : roofBox.min[forwardAxis];
+    sunroofAxis = forwardAxis;
+    sunroofSign = forwardSign;
+
+    // Kept smaller and pulled back from the windshield header than a real
+    // panoramic glass would sit: the roof narrows/curves down toward the
+    // windshield, and a flat rectangle can't follow that taper -- sitting
+    // it over the flatter mid-roof section instead of reaching toward the
+    // front avoids the panel poking out past the actual roof surface there.
+    const glassLen = cabinRoofLen * 0.30; // footprint used only to anchor the panel's center below -- not its rendered size
+    const headerGap = cabinRoofLen * 0.22;
+
+    // roofBox is an axis-ALIGNED box around a mesh that's actually yawed
+    // (see the rotation fix below) -- its extent along "widthAxis" is
+    // inflated by that diagonal, and its center along that axis doesn't
+    // reliably land on the car's true centerline either. Real published
+    // car width (already used for the whole model's scale elsewhere) is a
+    // more honest source for the panel's width than that skewed measurement.
+    // Pulled in slightly (0.55 -> 0.50) per feedback that the corners were
+    // peeking out past the window-trim edges on both sides.
+    const panelWidth = WIDTH * 0.50;
+
+    const anchor = roofBox.getCenter(new THREE.Vector3());
+    anchor[forwardAxis] = frontEdge - sunroofSign * (headerGap + glassLen / 2);
+    // The whole car was already centered on the world X/Z origin when the
+    // model loaded (see root.position.x/z above) -- that's the real
+    // centerline, more reliable than this one submesh's own (possibly
+    // off-center, AABB-skewed) bounding-box center. Nudged toward the
+    // car's real left side (same direction as door_FL relative to
+    // door_FR) on top of dead-center -- 6% overshot, backed off in steps
+    // (4%, 3%, 2.7%, 2.2%, 1.7%, 1.2%, 0.7%, 0.2%) then nudged back up
+    // (1%, still reading as too far right) to 2% per feedback.
+    const leftSign = Math.sign(widthAxisVector[widthAxis]) || 1;
+    anchor[widthAxis] = leftSign * (WIDTH * 0.02);
+    sunroofGroup.position.copy(anchor);
+
+    // Shortened from the anchor-based footprint above -- originally 10% off
+    // the front edge, 20% off the back -- recentered on the SAME anchor
+    // point computed above rather than letting that trim shift the panel's
+    // center. Front trim eased back in steps (8%, 4%, 0%) and now grown 1%
+    // PAST the original anchor-derived front edge per feedback (negative
+    // trim -- the front now extends slightly into what was the header gap).
+    // Back trim stays at the original 20% -- a 50-point back extension was
+    // tried and reverted per feedback.
+    const glassRenderLen = glassLen * (1 - -0.01 - 0.20);
+    sunroofSlideLen = glassRenderLen * 0.85; // slides back to nest under the fixed rear roof, staying inside it
+    sunroofGlass.scale.set(1, 1, 1);
+    sunroofGlass.scale[forwardAxis] = glassRenderLen;
+    sunroofGlass.scale[widthAxis] = panelWidth;
+    sunroofShade.scale.copy(sunroofGlass.scale);
+
+    // This car's mesh has an inherent yaw that isn't aligned to pure world
+    // X/Z (the same fact that made the hood/tailgate hinges need a real
+    // widthAxisVector instead of a plain axis name) -- a plain world-axis
+    // box came out visibly tilted against the actual roofline. Build a
+    // real orientation from the model's own forward (bumper_F/bumper_R)
+    // direction. The first attempt fed makeBasis() the raw bumper-to-bumper
+    // vector directly, which has a small real height difference (the front
+    // and rear bumpers don't sit at exactly the same Y) -- not perpendicular
+    // to world-up, so the resulting matrix wasn't a clean rotation and
+    // skewed the panel badly. Flattening forward onto the horizontal plane
+    // and rebuilding width as up-cross-forward guarantees an orthonormal,
+    // pure-yaw-only basis (the car sits flat on the ground -- no roll/pitch
+    // to model here).
+    let forwardVectorReal = new THREE.Vector3(1, 0, 0);
+    const bumperFforOrient = findByName(root, "xc90_bumper_F");
+    const bumperRforOrient = findByName(root, "xc90_bumper_R");
+    if (bumperFforOrient && bumperRforOrient) {
+      const pFv = bumperFforOrient.getWorldPosition(new THREE.Vector3());
+      const pRv = bumperRforOrient.getWorldPosition(new THREE.Vector3());
+      forwardVectorReal.subVectors(pFv, pRv);
+    }
+    forwardVectorReal.y = 0;
+    forwardVectorReal.normalize();
+    const upVec = new THREE.Vector3(0, 1, 0);
+    const widthVectorReal = new THREE.Vector3().crossVectors(upVec, forwardVectorReal).normalize();
+    const xAxisVec = forwardAxis === "x" ? forwardVectorReal : widthVectorReal;
+    const zAxisVec = forwardAxis === "x" ? widthVectorReal : forwardVectorReal;
+    const basis = new THREE.Matrix4().makeBasis(xAxisVec, upVec, zAxisVec);
+    sunroofGroup.quaternion.setFromRotationMatrix(basis);
+
+    // Curve the front edge down to follow the roof's own forward taper,
+    // instead of only ever lowering the whole panel uniformly (which sinks
+    // the back edge too, unnecessarily). A small tilt around the panel's
+    // own local width axis, set on the meshes themselves (not the group),
+    // so it applies on top of the group's already-yaw-corrected
+    // orientation above rather than fighting it. Sign resolved the same
+    // way the hood/tailgate hinge signs are elsewhere in this file: rotate
+    // a test point a little and check which way it actually moved, rather
+    // than guessing a sign by hand.
+    const tiltAxisLocal = new THREE.Vector3();
+    tiltAxisLocal[forwardAxis === "x" ? "z" : "x"] = 1;
+    const tiltTestPoint = new THREE.Vector3();
+    tiltTestPoint[forwardAxis] = sunroofSign;
+    tiltTestPoint.applyAxisAngle(tiltAxisLocal, 0.1);
+    const tiltSign = tiltTestPoint.y < 0 ? 1 : -1;
+    // Stored for applyState() below to reapply every frame, scaled by how
+    // open the panel is -- a real tilt-and-slide sunroof tilts UP flat/level
+    // before sliding back, not with the closed-position curve still baked
+    // in, so the curve should only be fully present while closed and ease
+    // back to level as it opens.
+    sunroofTiltAxis.copy(tiltAxisLocal);
+    sunroofTiltRad = tiltSign * THREE.MathUtils.degToRad(5.5); // 7deg raised the back edge up behind too much -- backed off per feedback
+
+    // Sit at/just below the headliner's own top surface rather than above
+    // it, so the glass reads as set into the roof structure rather than
+    // floating on top of it. Stored as base heights (not applied directly)
+    // -- applyState() below also drops the panels further as they retract,
+    // so at "fully open" they're tucked under the fixed metal roof instead
+    // of still poking up at closed-position height. Lowered further per
+    // feedback that the CLOSED position (no drop applied yet) was still
+    // poking up above the metal roof even though the open position (drop
+    // fully applied) already looked right -- so the closed baseline itself
+    // needed to come down, with the drop amount trimmed to match so the
+    // already-correct open height doesn't move. Still poking up in closed
+    // position per feedback -- lowered again by the same amount, with the
+    // drop amount trimmed again to keep the open height fixed.
+    sunroofGlassBaseY = roofBox.max.y - anchor.y - 0.07;
+    sunroofShadeBaseY = roofBox.max.y - anchor.y - 0.085;
+  }
+
+  applyState();
+});
+
+// ---------- state -> visuals ----------
+// Exact angles confirmed by hand-tuning (previously via a debug slider,
+// now removed) -- real verified values, not a computed openSign guess.
+const HOOD_OPEN_DEG = -50, TAILGATE_OPEN_DEG = 55;
+function applyState() {
+  // Real heading from xc90_sim's own 3-DOF vehicle dynamics (body.heading_rad)
+  // -- not a fake demo path. heading_deg is 0 at sim start, which is exactly
+  // this model's already-tuned rest orientation, so rotating carGroup by it
+  // doesn't disturb anything below that assumes the model's own local
+  // forward/width directions (those stay correct relative to carGroup
+  // regardless of carGroup's own spin). Position is NOT applied to
+  // carGroup directly -- see the floating-origin note above buildRoadTexture:
+  // the car mesh stays at the origin, and the ground's texture scrolls by
+  // the real world_x_m/world_y_m instead, so fine local geometry (door
+  // gaps, trim) never suffers float32 precision loss from a huge translation.
+  carGroup.rotation.y = THREE.MathUtils.degToRad(state.heading_deg);
+  roadTexture.offset.set(
+    -(state.world_x_m / ROAD_TILE_SIZE_M) % 1,
+    -(state.world_y_m / ROAD_TILE_SIZE_M) % 1
+  );
+
+  hoodGroup.quaternion.setFromAxisAngle(widthAxisVector, state.hood_open ? THREE.MathUtils.degToRad(HOOD_OPEN_DEG) : 0);
+  // Real power tailgate: a genuine 6-second timed actuation (see
+  // xc90_sim.body.Closures), not instant like the manually-lifted hood --
+  // animate smoothly against the real progress fraction from the
+  // simulation instead of snapping the instant the final state flips.
+  const tgTargetDeg = state.tailgate_target_open ? TAILGATE_OPEN_DEG : 0;
+  const tgStartDeg = state.tailgate_target_open ? 0 : TAILGATE_OPEN_DEG;
+  const tgFrac = state.tailgate_progress_frac != null ? state.tailgate_progress_frac : (state.tailgate_open ? 1 : 0);
+  tailgateGroup.quaternion.setFromAxisAngle(widthAxisVector, THREE.MathUtils.degToRad(tgStartDeg + (tgTargetDeg - tgStartDeg) * tgFrac));
+
+  // Sunroof glass + shade: same smooth-against-real-progress technique as
+  // the tailgate, but sliding position instead of rotation, since a
+  // panoramic sunroof glides back rather than swinging on a hinge. Backend
+  // has real independent timers for glass (15s) and shade (8s) -- see
+  // xc90_sim.body.Sunroof -- and a real interlock (glass can't open until
+  // the shade is out of its way), so they're animated independently here
+  // using each part's own progress fraction.
+  // 0 = fully closed, 1 = fully open, regardless of which direction it's
+  // currently traveling -- used for both the backward slide and the
+  // downward drop below, so the two stay in lockstep.
+  function opennessFrac(targetOpen, progressFrac) {
+    const frac = progressFrac != null ? progressFrac : (targetOpen ? 1 : 0);
+    return targetOpen ? frac : (1 - frac);
+  }
+  const glassOpenness = opennessFrac(state.sunroof_glass_target === "open", state.sunroof_glass_progress_frac);
+  const shadeOpenness = opennessFrac(state.sunroof_shade_target, state.sunroof_shade_progress_frac);
+  sunroofGlass.position[sunroofAxis] = -sunroofSign * glassOpenness * sunroofSlideLen;
+  sunroofShade.position[sunroofAxis] = -sunroofSign * shadeOpenness * sunroofSlideLen;
+  // Drop below the fixed roof height as they retract, so a fully-open
+  // sunroof tucks the panels under the metal roof instead of leaving them
+  // poking up at their closed-position height.
+  sunroofGlass.position.y = sunroofGlassBaseY - glassOpenness * sunroofDropAmount;
+  sunroofShade.position.y = sunroofShadeBaseY - shadeOpenness * sunroofDropAmount;
+  // The front-dip curve (tuned to match the roof) only makes sense while
+  // closed -- a real tilt-and-slide sunroof tilts back up level before it
+  // slides, rather than gliding backward still tilted at the closed angle.
+  // Ease it out to flat as each part opens, back to the closed curve as it
+  // closes, using each part's own openness so glass and shade can be at
+  // different points in that transition.
+  sunroofGlass.quaternion.setFromAxisAngle(sunroofTiltAxis, sunroofTiltRad * (1 - glassOpenness));
+  sunroofShade.quaternion.setFromAxisAngle(sunroofTiltAxis, sunroofTiltRad * (1 - shadeOpenness));
+  // A real shade tucks fully out of view into its housing once retracted --
+  // hide it once it's actually settled open, so the fully-retracted look is
+  // just the glass, not the shade still visible/blending underneath it.
+  sunroofShade.visible = !(state.sunroof_shade_open && state.sunroof_shade_progress_frac >= 1);
+
+  Object.entries(doorHinges).forEach(([corner, hinge]) => {
+    const open = state.door_open[corner];
+    hinge.rotation.y = open ? (hinge.userData.openSign || 1) * 1.0 : 0;
+  });
+  engineBay.visible = state.hood_open;
+  if (realEngineNode) realEngineNode.visible = !state.engine_removed;
+  battery.material.color.set(state.battery_disconnected ? 0x662222 : 0x2a2a2a);
+  washerFluidBody.material.color.set(state.washer_fluid_low_warning ? 0xcc6633 : 0x3388cc);
+  Object.entries(fuseStuds).forEach(([name, stud]) => {
+    const out = state.blown_fuses.includes(name) || state.pulled_fuses.includes(name);
+    stud.material.color.set(out ? 0x662222 : 0x3399ff);
+    stud.position.y = out ? 0.02 : 0.05; // "pulled" reads visually as popped up/out
+  });
+  Object.entries(relayStuds).forEach(([name, stud]) => {
+    const out = state.relay_faults.includes(name);
+    stud.material.color.set(out ? 0x662222 : 0xffaa33);
+    stud.position.y = out ? 0.02 : 0.05;
+  });
+}
+
+// ---------- picking ----------
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+renderer.domElement.addEventListener("click", (ev) => {
+  if (dragged) return;
+  pointer.x = (ev.clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(ev.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(clickableObjects, true);
+  for (const hit of hits) {
+    const ud = hit.object.userData;
+    if (ud && ud.action) { sendAction(ud.action, ud.name ? { name: ud.name } : undefined); break; }
+  }
+});
+
+// ---------- mouse orbit ----------
+let dragging = false, dragged = false, lastX = 0, lastY = 0;
+renderer.domElement.addEventListener("mousedown", (e) => { dragging = true; dragged = false; lastX = e.clientX; lastY = e.clientY; });
+window.addEventListener("mouseup", () => dragging = false);
+window.addEventListener("mousemove", (e) => {
+  if (!dragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  if (Math.abs(dx) + Math.abs(dy) > 3) dragged = true;
+  camYaw -= dx * 0.006;
+  camPitch = Math.max(0.08, Math.min(1.5, camPitch + dy * 0.006));
+  lastX = e.clientX; lastY = e.clientY;
+  updateCamera();
+});
+renderer.domElement.addEventListener("wheel", (e) => {
+  camDist = Math.max(3, Math.min(20, camDist + e.deltaY * 0.01));
+  updateCamera();
+});
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+(function animate() {
+  requestAnimationFrame(animate);
+  updateCamera(); // car moves on its own via real sim state, not just user input, so this can't only run on drag/wheel
+  renderer.render(scene, camera);
+})();
+
+// ---------- keyboard driving controls ----------
+// Arrow Up/Down = throttle/brake, Left/Right = steering -- polled on an
+// interval (not per-keydown-event) so holding a key sends a continuous
+// command, the same way a held pedal or held wheel input would.
+const keysDown = {};
+window.addEventListener("keydown", (e) => { keysDown[e.key] = true; });
+window.addEventListener("keyup", (e) => { keysDown[e.key] = false; });
+
+const STEER_RATE_DEG_S = 300; // keyboard-driven lock-to-lock in ~1.5s
+const STEER_MAX_DEG = 450;
+const CONTROL_DT_S = 0.1;
+let steeringAngleDeg = 0;
+
+setInterval(() => {
+  if (keysDown["ArrowUp"]) {
+    sendAction("set_throttle", { value: 0.6 });
+  } else if (keysDown["ArrowDown"]) {
+    sendAction("set_brake", { on: true });
+  } else {
+    sendAction("set_throttle", { value: 0.0 });
+  }
+
+  if (keysDown["ArrowLeft"]) {
+    steeringAngleDeg = Math.max(-STEER_MAX_DEG, steeringAngleDeg - STEER_RATE_DEG_S * CONTROL_DT_S);
+  } else if (keysDown["ArrowRight"]) {
+    steeringAngleDeg = Math.min(STEER_MAX_DEG, steeringAngleDeg + STEER_RATE_DEG_S * CONTROL_DT_S);
+  } else {
+    steeringAngleDeg *= 0.85; // self-centers when released, like a real steering system
+  }
+  sendAction("set_steering", { angle_deg: steeringAngleDeg });
+}, CONTROL_DT_S * 1000);
+
+applyState();
+pollState();
+</script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+numpy
+
+# Only needed for examples/run_obd_trip.py (live OBD2 integration) — the
+# core simulation, trip logger, and live-routing features don't need it.
+obd
