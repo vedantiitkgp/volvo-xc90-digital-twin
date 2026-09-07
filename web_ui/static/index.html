@@ -7,10 +7,16 @@
   html, body { margin: 0; height: 100%; background: #0b0d10; color: #e8eaed; font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
   #scene { position: absolute; inset: 0; }
   #hud {
-    position: absolute; top: 12px; left: 12px; width: 300px;
+    position: absolute; top: 12px; left: 12px; width: 300px; max-height: calc(100vh - 24px);
     background: rgba(15,17,20,0.82); border: 1px solid #2a2e34; border-radius: 10px;
-    padding: 14px 16px; font-size: 13px; backdrop-filter: blur(4px);
+    padding: 14px 16px; font-size: 13px; backdrop-filter: blur(4px); overflow-y: auto;
   }
+  #log {
+    max-height: 140px; overflow-y: auto; font-size: 11px; color: #9aa2ad;
+    background: #0e1013; border: 1px solid #1c1f24; border-radius: 6px; padding: 6px 8px;
+  }
+  #log div { padding: 1px 0; border-bottom: 1px solid #1a1d22; }
+  #log div:last-child { border-bottom: none; }
   #hud h1 { font-size: 15px; margin: 0 0 10px; color: #9fd3ff; }
   .row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #1c1f24; }
   .row span:first-child { color: #9aa2ad; }
@@ -76,6 +82,9 @@
     <button id="btn-engine">Remove engine</button>
   </div>
 
+  <div id="panel-title">Activity log</div>
+  <div id="log"></div>
+
 </div>
 <div id="hint">Drag to orbit · scroll to zoom · click parts in the engine bay (open the hood first) · start the engine, brake, shift to D, then arrow keys drive (↑ throttle · ↓ brake · ←→ steer)</div>
 
@@ -88,13 +97,49 @@ const state = { hood_open: false, door_open: {fl:false,fr:false,rl:false,rr:fals
                 sunroof_glass_state: "closed", sunroof_glass_target: "closed", sunroof_glass_progress_frac: 1,
                 sunroof_shade_open: false, sunroof_shade_target: false, sunroof_shade_progress_frac: 1,
                 engine_removed: false, battery_disconnected: false, blown_fuses: [], pulled_fuses: [], relay_faults: [],
-                gear_selector: "P", brake_on: false, world_x_m: 0, world_y_m: 0, heading_deg: 0, steering_wheel_deg: 0 };
+                gear_selector: "P", brake_on: false, world_x_m: 0, world_y_m: 0, heading_deg: 0, steering_wheel_deg: 0, distance_m: 0 };
+
+// ---------- activity log ----------
+// A visible record of real state transitions (not a log of button clicks --
+// derived by diffing consecutive real /state snapshots), so what actually
+// happened to each part of the car is auditable rather than trusting the
+// 3D view alone.
+const eventLog = [];
+let prevLogState = null;
+function logEvent(text) {
+  eventLog.unshift("[" + new Date().toLocaleTimeString() + "] " + text);
+  if (eventLog.length > 60) eventLog.length = 60;
+  const el = document.getElementById("log");
+  el.innerHTML = eventLog.map((e) => "<div>" + e + "</div>").join("");
+}
+function diffAndLog(oldS, newS) {
+  if (!oldS) return;
+  if (oldS.hood_open !== newS.hood_open) logEvent(newS.hood_open ? "Hood opened" : "Hood closed");
+  if (oldS.tailgate_open !== newS.tailgate_open) logEvent(newS.tailgate_open ? "Tailgate opened" : "Tailgate closed");
+  ["fl", "fr", "rl", "rr"].forEach((c) => {
+    if (oldS.door_open[c] !== newS.door_open[c]) logEvent("Door " + c.toUpperCase() + (newS.door_open[c] ? " opened" : " closed"));
+  });
+  if (oldS.sunroof_glass_state !== newS.sunroof_glass_state) logEvent("Sunroof glass: " + newS.sunroof_glass_state);
+  if (oldS.sunroof_shade_open !== newS.sunroof_shade_open) logEvent("Sunroof shade " + (newS.sunroof_shade_open ? "opened" : "closed"));
+  if (oldS.engine_running !== newS.engine_running) logEvent(newS.engine_running ? "Engine started" : "Engine stopped");
+  if (oldS.gear_selector !== newS.gear_selector) logEvent("Gear selector: " + newS.gear_selector);
+  if (oldS.battery_disconnected !== newS.battery_disconnected) logEvent(newS.battery_disconnected ? "Battery disconnected" : "Battery reconnected");
+  if (oldS.engine_removed !== newS.engine_removed) logEvent(newS.engine_removed ? "Engine removed" : "Engine reinstalled");
+  if (oldS.washer_fluid_low_warning !== newS.washer_fluid_low_warning && newS.washer_fluid_low_warning) logEvent("Washer fluid low");
+  ["blown_fuses", "pulled_fuses", "relay_faults"].forEach((k) => {
+    if (JSON.stringify(oldS[k]) !== JSON.stringify(newS[k])) {
+      logEvent(k.replace("_", " ") + ": " + (newS[k].length ? newS[k].join(", ") : "none"));
+    }
+  });
+}
 
 // ---------- networking ----------
 async function pollState() {
   try {
     const r = await fetch(API + "/state");
     Object.assign(state, await r.json());
+    diffAndLog(prevLogState, state);
+    prevLogState = JSON.parse(JSON.stringify(state));
     renderHud();
     applyState();
   } catch (e) { /* server not reachable yet */ }
@@ -104,7 +149,13 @@ async function sendAction(action, extra) {
   const body = Object.assign({ action }, extra || {});
   const r = await fetch(API + "/action", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
   const data = await r.json();
-  if (data.ok) { Object.assign(state, data.state); renderHud(); applyState(); }
+  if (data.ok) {
+    Object.assign(state, data.state);
+    diffAndLog(prevLogState, state);
+    prevLogState = JSON.parse(JSON.stringify(state));
+    renderHud();
+    applyState();
+  }
 }
 
 function renderHud() {
@@ -363,6 +414,7 @@ const doorHinges = { fl: new THREE.Group(), fr: new THREE.Group(), rl: new THREE
 carGroup.add(hoodGroup, tailgateGroup, doorHinges.fl, doorHinges.fr, doorHinges.rl, doorHinges.rr);
 let widthAxis = "z"; // which local axis hood/tailgate hinge around — recomputed from the real model below
 let widthAxisVector = new THREE.Vector3(0, 0, 1); // real geometry-derived hinge axis — see below; used for actual rotation, not just sign detection
+let carRestForward = new THREE.Vector3(0, 0, 1); // real forward direction at carGroup.rotation.y=0 — used to correctly map sim world_x_m/world_y_m onto Three's axes (see applyState's road-scroll code); recomputed below
 let sunroofAxis = "x"; // which local axis the sunroof glass/shade slide along — same as forwardAxis, recomputed below
 let sunroofSign = 1; // which direction along that axis is "backward" (toward the tailgate) — recomputed below
 let sunroofSlideLen = 0.4; // real roof-opening length along sunroofAxis, used as the full open-slide distance — recomputed below
@@ -372,7 +424,12 @@ const sunroofDropAmount = 0.01; // how far the panels drop below roof height as 
 const sunroofTiltAxis = new THREE.Vector3(1, 0, 0); // local width axis the front-dip curve tilts around — recomputed below
 let sunroofTiltRad = 0; // full closed-position tilt angle (signed) — recomputed below; eased to 0 as the panel opens, in applyState()
 let realEngineNode = null;
+let steeringWheelNode = null; // real in-cabin wheel mesh, found below — rotated by real steering_wheel_deg in applyState()
 const clickableObjects = [];
+const wheelNodes = []; // real rim + tire meshes, found below — spun by real distance traveled in applyState()
+// 235/55R19, confirmed real spec (xc90_sim/specs/chassis.py TIRE_ROLLING_RADIUS_M)
+// -- used to convert real distance_m into a real wheel rotation angle, not a guessed spin rate.
+const WHEEL_ROLLING_RADIUS_M = 0.3706;
 
 // Engine bay overlay: fuse box + relay box + a stand-in battery — this
 // kit has no discrete battery mesh, and no fuse/relay box mesh at all, so
@@ -814,6 +871,7 @@ gltfLoader.load("static/models/volvo_xc90_inscription.glb", (gltf) => {
   // FORWARD: a real liftgate's free edge swings up AND forward, tucking
   // toward the roof -- test against that instead.
   const FORWARD = new THREE.Vector3(forwardAxis === "x" ? forwardSign : 0, 0, forwardAxis === "z" ? forwardSign : 0);
+  carRestForward.copy(FORWARD);
   const hoodNode = findByName(root, "xc90_hood");
   if (hoodNode) {
     const hoodBoxBefore = new THREE.Box3().setFromObject(hoodNode);
@@ -858,6 +916,36 @@ gltfLoader.load("static/models/volvo_xc90_inscription.glb", (gltf) => {
     attachSiblingParts(doorHinges[corner], siblingNames);
   });
 
+
+  // Real wheel rim assemblies -- GLTFLoader strips periods from names (the
+  // same reason the door glass dividers needed a fix earlier), so this
+  // kit's "xc90_wheel_inscription.001"/".002"/".003" come out with no dot
+  // at runtime. cx7_tire is a CHILD of each of these (confirmed directly
+  // against the GLB's own JSON), not a separate sibling -- it inherits the
+  // rim's rotation automatically, so it's deliberately NOT listed here;
+  // rotating it a second time on top would double its spin rate.
+  // These nodes also use a raw baked "matrix" (not separate position/
+  // rotation/scale) that includes a real ~90 degree corrective rotation
+  // needed just to orient the wheel mesh correctly on the car -- the first
+  // attempt overwrote that entirely with just the spin angle, which is
+  // exactly why the wheel (and everything reasoning about the scene after
+  // it) came out visually wrong. Caching the real rest orientation here so
+  // applyState() can layer the spin on TOP of it instead of replacing it.
+  ["xc90_wheel_inscription", "xc90_wheel_inscription001", "xc90_wheel_inscription002", "xc90_wheel_inscription003"]
+    .forEach((name) => {
+    const n = findByName(root, name);
+    if (!n) return;
+    n.userData.restQuaternion = n.quaternion.clone();
+    wheelNodes.push(n);
+  });
+
+  // Real in-cabin steering wheel -- rotated by the real steering_wheel_deg
+  // telemetry in applyState(), same rest-quaternion-preserving technique as
+  // the road wheels above (this node likely has its own baked orientation
+  // too, so replacing its quaternion outright would misalign it the same
+  // way the road wheels did on the first attempt).
+  steeringWheelNode = findByName(root, "xc90_steeringwheel");
+  if (steeringWheelNode) steeringWheelNode.userData.restQuaternion = steeringWheelNode.quaternion.clone();
 
   // Real engine assembly — toggling its own visibility on "remove engine"
   // instead of a primitive stand-in box.
@@ -1028,10 +1116,39 @@ function applyState() {
   // the real world_x_m/world_y_m instead, so fine local geometry (door
   // gaps, trim) never suffers float32 precision loss from a huge translation.
   carGroup.rotation.y = THREE.MathUtils.degToRad(state.heading_deg);
-  roadTexture.offset.set(
-    -(state.world_x_m / ROAD_TILE_SIZE_M) % 1,
-    -(state.world_y_m / ROAD_TILE_SIZE_M) % 1
-  );
+  // xc90_sim's own ground-plane axes (world_x_m = forward at heading 0,
+  // world_y_m = left at heading 0 -- see vehicle_body.py's integration)
+  // don't line up with Three's world X/Z the way a naive 1:1 mapping
+  // assumes: this model's real forward axis is Z, not X (established from
+  // its own bumper geometry way earlier), so driving forward was scrolling
+  // the wrong screen axis and looked like sliding sideways. Decomposing
+  // through the model's real forward/left vectors instead makes this
+  // correct regardless of which axis the model happens to be authored on.
+  const dispX = state.world_x_m * carRestForward.x + state.world_y_m * widthAxisVector.x;
+  const dispZ = state.world_x_m * carRestForward.z + state.world_y_m * widthAxisVector.z;
+  // Sideways axis confirmed correct; forward/back was inverted (drove
+  // forward but the ground scrolled as if reversing) -- flipped this term.
+  roadTexture.offset.set(-dispX / ROAD_TILE_SIZE_M, -dispZ / ROAD_TILE_SIZE_M);
+
+  // Real wheel rotation: angle = real distance traveled / real rolling
+  // radius, not a guessed spin rate -- derived from the same distance_m
+  // xc90_sim already tracks (odometer-equivalent), so the wheels visually
+  // roll exactly as far as the car has actually gone. Composed ON TOP of
+  // each wheel's cached rest orientation (see where wheelNodes is built) --
+  // setting the quaternion directly, replacing that rest orientation, is
+  // what caused the wheel (and the whole scene once it deformed) to render
+  // wrong the first time.
+  const wheelSpinQuat = new THREE.Quaternion().setFromAxisAngle(widthAxisVector, state.distance_m / WHEEL_ROLLING_RADIUS_M);
+  wheelNodes.forEach((w) => w.quaternion.copy(wheelSpinQuat).multiply(w.userData.restQuaternion));
+
+  // Real in-cabin steering wheel, turning with the real steering_wheel_deg
+  // telemetry -- rotated around the car's own forward axis (the column's
+  // real rake angle isn't modeled, just its rotation), composed on top of
+  // its cached rest orientation like the road wheels above.
+  if (steeringWheelNode) {
+    const steerQuat = new THREE.Quaternion().setFromAxisAngle(carRestForward, THREE.MathUtils.degToRad(state.steering_wheel_deg));
+    steeringWheelNode.quaternion.copy(steerQuat).multiply(steeringWheelNode.userData.restQuaternion);
+  }
 
   hoodGroup.quaternion.setFromAxisAngle(widthAxisVector, state.hood_open ? THREE.MathUtils.degToRad(HOOD_OPEN_DEG) : 0);
   // Real power tailgate: a genuine 6-second timed actuation (see
@@ -1150,9 +1267,22 @@ window.addEventListener("resize", () => {
 const keysDown = {};
 window.addEventListener("keydown", (e) => { keysDown[e.key] = true; });
 window.addEventListener("keyup", (e) => { keysDown[e.key] = false; });
+// If the tab loses focus while a key is physically still held (switching
+// windows, clicking elsewhere), the browser can stop delivering that key's
+// keyup event -- it stays stuck "down" here forever, sending continuous
+// throttle/steering input the user never meant to hold. Clearing on blur
+// treats losing focus as releasing every key, same as a real pedal/wheel
+// nobody's touching anymore.
+window.addEventListener("blur", () => { for (const k in keysDown) keysDown[k] = false; });
 
-const STEER_RATE_DEG_S = 300; // keyboard-driven lock-to-lock in ~1.5s
-const STEER_MAX_DEG = 450;
+// xc90_sim has a real nonlinear tire model -- a full-lock steering input at
+// speed genuinely saturates the tires and slides/spins the car, same as a
+// real one would. That's correct physics, but the original 450deg max made
+// it trivial to accidentally command a full-lock turn from a quick key tap
+// at speed. Capped lower and slowed down so normal taps read as a normal
+// road turn instead of a slam-the-wheel maneuver.
+const STEER_RATE_DEG_S = 150; // lock-to-lock in ~1s at the new lower max
+const STEER_MAX_DEG = 150;
 const CONTROL_DT_S = 0.1;
 let steeringAngleDeg = 0;
 
@@ -1165,10 +1295,13 @@ setInterval(() => {
     sendAction("set_throttle", { value: 0.0 });
   }
 
+  // xc90_sim's set_steering_wheel_angle_deg sign convention turned out
+  // opposite to the arrow-key direction (Left was turning the car right and
+  // vice versa) -- flipped which key increments/decrements here.
   if (keysDown["ArrowLeft"]) {
-    steeringAngleDeg = Math.max(-STEER_MAX_DEG, steeringAngleDeg - STEER_RATE_DEG_S * CONTROL_DT_S);
-  } else if (keysDown["ArrowRight"]) {
     steeringAngleDeg = Math.min(STEER_MAX_DEG, steeringAngleDeg + STEER_RATE_DEG_S * CONTROL_DT_S);
+  } else if (keysDown["ArrowRight"]) {
+    steeringAngleDeg = Math.max(-STEER_MAX_DEG, steeringAngleDeg - STEER_RATE_DEG_S * CONTROL_DT_S);
   } else {
     steeringAngleDeg *= 0.85; // self-centers when released, like a real steering system
   }

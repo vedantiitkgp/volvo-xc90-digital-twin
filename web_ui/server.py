@@ -69,6 +69,7 @@ def _snapshot_state():
             "brake_on": sim._manual_brake > 0.5,
             "world_x_m": t["world_x_m"],
             "world_y_m": t["world_y_m"],
+            "distance_m": t["distance_m"],
             "heading_deg": t["heading_deg"],
             "steering_wheel_deg": t["steering_wheel_deg"],
             "hood_open": sim.closures.hood_open,
