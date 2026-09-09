@@ -1321,12 +1321,9 @@ async function controlLoop() {
       await sendAction("set_throttle", { value: 0.0 });
     }
 
-    // xc90_sim's set_steering_wheel_angle_deg sign convention turned out
-    // opposite to the arrow-key direction (Left was turning the car right
-    // and vice versa) -- flipped which key increments/decrements here.
-    if (keysDown["ArrowLeft"]) {
+    if (keysDown["ArrowRight"]) {
       steeringAngleDeg = Math.min(STEER_MAX_DEG, steeringAngleDeg + STEER_RATE_DEG_S * CONTROL_DT_S);
-    } else if (keysDown["ArrowRight"]) {
+    } else if (keysDown["ArrowLeft"]) {
       steeringAngleDeg = Math.max(-STEER_MAX_DEG, steeringAngleDeg - STEER_RATE_DEG_S * CONTROL_DT_S);
     } else {
       steeringAngleDeg *= 0.85; // self-centers when released, like a real steering system
