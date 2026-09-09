@@ -1208,6 +1208,115 @@ gltfLoader.load("models/volvo_xc90_inscription.glb", (gltf) => {
     sunroofShadeBaseY = roofBox.max.y - anchor.y - 0.085;
   }
 
+  // ---- California license plates (front + rear) ----
+  (function addLicensePlates() {
+    const PLATE_W = 0.305, PLATE_H = 0.152, PLATE_D = 0.005;
+    const W = 512, H = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+
+    // Helper: rounded-rect path
+    const R = 28; // corner radius in canvas pixels
+    function rr(x, y, w, h) {
+      ctx.beginPath();
+      ctx.moveTo(x + R, y);
+      ctx.lineTo(x + w - R, y);
+      ctx.arcTo(x + w, y,     x + w, y + R,     R);
+      ctx.lineTo(x + w, y + h - R);
+      ctx.arcTo(x + w, y + h, x + w - R, y + h, R);
+      ctx.lineTo(x + R, y + h);
+      ctx.arcTo(x,     y + h, x,     y + h - R, R);
+      ctx.lineTo(x,     y + R);
+      ctx.arcTo(x,     y,     x + R, y,         R);
+      ctx.closePath();
+    }
+
+    // White rounded background — clip so text never bleeds past corners
+    rr(0, 0, W, H);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+    ctx.save();
+    rr(0, 0, W, H);
+    ctx.clip();
+
+    // Rounded border
+    rr(3, 3, W - 6, H - 6);
+    ctx.strokeStyle = '#AAAAAA';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+
+    // "JUN" — small blue registration month, top-left
+    ctx.fillStyle = '#002868';
+    ctx.font = `bold ${Math.round(H * 0.11)}px Arial, sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText('JUN', W * 0.07, H * 0.24);
+
+    // "California" in cursive red script, centred at the top
+    ctx.fillStyle = '#CC0000';
+    ctx.font = `italic bold ${Math.round(H * 0.21)}px 'Brush Script MT', 'Zapf Chancery', Georgia, cursive`;
+    ctx.textAlign = 'center';
+    ctx.fillText('California', W / 2, H * 0.30);
+
+    // Blue registration year sticker, top-right
+    ctx.fillStyle = '#1A44CC';
+    ctx.fillRect(W * 0.81, H * 0.04, W * 0.13, H * 0.22);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = `bold ${Math.round(H * 0.10)}px Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText('2024', W * 0.875, H * 0.20);
+
+    // Plate number — large bold navy, clamped to 88% of canvas width
+    ctx.fillStyle = '#002868';
+    ctx.font = `bold ${Math.round(H * 0.40)}px 'Arial Black', Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText('7ULD850', W / 2, H * 0.72, W * 0.88);
+
+    // "dmv.ca.gov" in small red at the bottom
+    ctx.fillStyle = '#CC0000';
+    ctx.font = `${Math.round(H * 0.09)}px Arial, sans-serif`;
+    ctx.fillText('dmv.ca.gov', W / 2, H * 0.92);
+
+    ctx.restore(); // end rounded-corner clip
+
+    const tex = new THREE.CanvasTexture(canvas);
+    const plateMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.3, metalness: 0.1, transparent: true, alphaTest: 0.1 });
+    const backMat  = new THREE.MeshStandardMaterial({ color: 0x777777, roughness: 0.8 });
+    // BoxGeometry face indices: 4 = +Z face, 5 = -Z face.
+    // Front plate (no rotation): face 4 faces forward → show plateMat there.
+    // Rear plate (rotation.y = π): face 4 now faces rearward (correct), but
+    // face 5 flips to face forward and would show backMat as a grey patch.
+    // BoxGeometry face 5 has a reversed U-axis; combined with the π rotation
+    // the two mirrorings cancel, so putting plateMat on face 5 of the rear
+    // plate shows the texture correctly from the front camera as well.
+    const matsF = [backMat, backMat, backMat, backMat, plateMat, backMat];
+    const matsR = [backMat, backMat, backMat, backMat, plateMat, plateMat];
+    const geo  = new THREE.BoxGeometry(PLATE_W, PLATE_H, PLATE_D);
+
+    // Bumper marker nodes sit at the model origin (empty locators), so use
+    // the carGroup's real bounding box to find the actual front/rear face.
+    // Inset each plate from the bounding-box edge so it sits flush against
+    // the bumper face rather than floating beyond it.
+    const INSET_R = 0.05; // rear plate: 5 cm inward from bounding-box edge
+    const carBox  = new THREE.Box3().setFromObject(carGroup);
+    const frontZ  = forwardSign > 0 ? carBox.max[forwardAxis] : carBox.min[forwardAxis];
+    const rearZ   = forwardSign > 0
+      ? carBox.min[forwardAxis] + INSET_R
+      : carBox.max[forwardAxis] - INSET_R;
+    const frontYaw = Math.atan2(carRestForward.x, carRestForward.z);
+
+    // Front plate sits at bumper height; rear plate is mounted higher on the
+    // XC90's tailgate surround, so give it extra lift.
+    [[frontZ, frontYaw, 0.44, matsF], [rearZ, frontYaw + Math.PI, 0.95, matsR]].forEach(([facePos, yaw, plateY, mats]) => {
+      const plate = new THREE.Mesh(geo, mats);
+      plate.position.set(0, plateY, 0);
+      plate.position[forwardAxis] = facePos;
+      plate.rotation.y = yaw;
+      carGroup.add(plate);
+    });
+  })();
+
   applyState();
 });
 
