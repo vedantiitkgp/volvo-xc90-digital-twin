@@ -1160,7 +1160,7 @@ function applyState() {
   // real rake angle isn't modeled, just its rotation), composed on top of
   // its cached rest orientation like the road wheels above.
   if (steeringWheelNode) {
-    const steerQuat = new THREE.Quaternion().setFromAxisAngle(carRestForward, THREE.MathUtils.degToRad(state.steering_wheel_deg));
+    const steerQuat = new THREE.Quaternion().setFromAxisAngle(carRestForward, THREE.MathUtils.degToRad(-state.steering_wheel_deg));
     steeringWheelNode.quaternion.copy(steerQuat).multiply(steeringWheelNode.userData.restQuaternion);
   }
 
@@ -1328,7 +1328,7 @@ async function controlLoop() {
     } else {
       steeringAngleDeg *= 0.85; // self-centers when released, like a real steering system
     }
-    await sendAction("set_steering", { angle_deg: steeringAngleDeg });
+    await sendAction("set_steering", { angle_deg: -steeringAngleDeg });
 
     await new Promise((resolve) => setTimeout(resolve, CONTROL_DT_S * 1000));
   }
