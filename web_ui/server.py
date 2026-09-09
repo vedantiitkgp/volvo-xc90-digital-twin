@@ -103,6 +103,7 @@ def _snapshot_state():
 def _do_action(name, payload):
     """Every branch here calls a real xc90_sim.Simulation method — no
     action here is decorative, each one mutates the live sim state."""
+    global sim  # needed so reset_sim can rebind the module-level variable
     with sim_lock:
         if name == "toggle_hood":
             sim.set_hood(not sim.closures.hood_open)
@@ -156,7 +157,6 @@ def _do_action(name, payload):
             # position and all mechanical state return to zero — useful when
             # the car has been driven far and the shared Render instance has
             # accumulated state that confuses new viewers.
-            global sim
             sim = Simulation()
         else:
             raise ValueError(f"unknown action: {name!r}")
