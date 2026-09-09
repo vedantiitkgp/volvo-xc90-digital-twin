@@ -82,6 +82,11 @@
     <button id="btn-engine">Remove engine</button>
   </div>
 
+  <div id="panel-title">View</div>
+  <div id="controls">
+    <button id="btn-view">Interior view (V)</button>
+  </div>
+
   <div id="panel-title">Activity log</div>
   <div id="log"></div>
 
@@ -93,7 +98,7 @@
 <script>
 // When running locally: keep API = "" (same-origin).
 // Deployed backend: https://volvo-xc90-sim.onrender.com
-const API = "https://volvo-xc90-sim.onrender.com";
+const API = "https://volvo-xc90-sim.onrender.com"; // local: "" | deployed: "https://volvo-xc90-sim.onrender.com"
 const state = { hood_open: false, door_open: {fl:false,fr:false,rl:false,rr:false}, tailgate_open: false,
                 tailgate_target_open: false, tailgate_progress_frac: 1,
                 sunroof_glass_state: "closed", sunroof_glass_target: "closed", sunroof_glass_progress_frac: 1,
@@ -277,16 +282,58 @@ scene.fog = new THREE.Fog(0x11141a, 20, 90); // pushed out for actual driving di
 
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 150);
 let camDist = 7.5, camYaw = 0.7, camPitch = 0.45;
+let interiorMode = false;
+
 // Fixed-origin orbit -- see the "floating origin" note near carGroup below
 // for why the car itself never actually moves in render space, even though
 // its real world_x_m/world_y_m from xc90_sim keeps changing while driving.
 function updateCamera() {
-  camera.position.set(
-    camDist * Math.cos(camPitch) * Math.sin(camYaw),
-    camDist * Math.sin(camPitch) + 1.0,
-    camDist * Math.cos(camPitch) * Math.cos(camYaw)
-  );
-  camera.lookAt(0, 0.8, 0);
+  if (interiorMode && steeringWheelNode) {
+    // Anchor to the real steering wheel node — a known inside-the-cabin
+    // reference point. Camera goes 0.35m behind and 0.3m above the wheel hub,
+    // then looks forward along the car's current heading direction.
+    const swWorld = new THREE.Vector3();
+    steeringWheelNode.getWorldPosition(swWorld);
+
+    // Car's current forward in world space (accounts for heading rotation)
+    const headingQuat = new THREE.Quaternion()
+      .setFromAxisAngle(new THREE.Vector3(0, 1, 0), carGroup.rotation.y);
+    const fwdWorld = carRestForward.clone().applyQuaternion(headingQuat);
+
+    camera.position.set(
+      swWorld.x - fwdWorld.x * 0.35,
+      swWorld.y + 0.3,
+      swWorld.z - fwdWorld.z * 0.35
+    );
+    camera.lookAt(
+      swWorld.x + fwdWorld.x * 10,
+      swWorld.y - 0.05,
+      swWorld.z + fwdWorld.z * 10
+    );
+  } else if (!interiorMode) {
+    // Offset camYaw by the car's current heading so the orbit camera always
+    // stays car-relative (behind/beside the car) instead of fixed in world
+    // space — without this the car visually spins as heading_deg changes.
+    const h = carGroup.rotation.y;
+    camera.position.set(
+      camDist * Math.cos(camPitch) * Math.sin(camYaw + h),
+      camDist * Math.sin(camPitch) + 1.0,
+      camDist * Math.cos(camPitch) * Math.cos(camYaw + h)
+    );
+    camera.lookAt(0, 0.8, 0);
+  }
+}
+
+function toggleInteriorMode() {
+  interiorMode = !interiorMode;
+  if (!interiorMode) {
+    // Snap orbit back to a clean angle so the exterior doesn't appear
+    // disorienting after the car has turned while in interior mode.
+    camYaw = 0.7; camPitch = 0.45; camDist = 7.5;
+  }
+  const btn = document.getElementById("btn-view");
+  btn.textContent = interiorMode ? "Exterior view (V)" : "Interior view (V)";
+  btn.className = interiorMode ? "active" : "";
 }
 // Deferred until after carGroup exists (below) -- calling it here threw
 // "Cannot access 'carGroup' before initialization" since carGroup is a
@@ -1250,7 +1297,7 @@ let dragging = false, dragged = false, lastX = 0, lastY = 0;
 renderer.domElement.addEventListener("mousedown", (e) => { dragging = true; dragged = false; lastX = e.clientX; lastY = e.clientY; });
 window.addEventListener("mouseup", () => dragging = false);
 window.addEventListener("mousemove", (e) => {
-  if (!dragging) return;
+  if (!dragging || interiorMode) return;
   const dx = e.clientX - lastX, dy = e.clientY - lastY;
   if (Math.abs(dx) + Math.abs(dy) > 3) dragged = true;
   camYaw -= dx * 0.006;
@@ -1259,6 +1306,7 @@ window.addEventListener("mousemove", (e) => {
   updateCamera();
 });
 renderer.domElement.addEventListener("wheel", (e) => {
+  if (interiorMode) return;
   camDist = Math.max(3, Math.min(20, camDist + e.deltaY * 0.01));
   updateCamera();
 });
@@ -1279,8 +1327,12 @@ window.addEventListener("resize", () => {
 // interval (not per-keydown-event) so holding a key sends a continuous
 // command, the same way a held pedal or held wheel input would.
 const keysDown = {};
-window.addEventListener("keydown", (e) => { keysDown[e.key] = true; });
+window.addEventListener("keydown", (e) => {
+  keysDown[e.key] = true;
+  if (e.key === "v" || e.key === "V") toggleInteriorMode();
+});
 window.addEventListener("keyup", (e) => { keysDown[e.key] = false; });
+document.getElementById("btn-view").addEventListener("click", toggleInteriorMode);
 // If the tab loses focus while a key is physically still held (switching
 // windows, clicking elsewhere), the browser can stop delivering that key's
 // keyup event -- it stays stuck "down" here forever, sending continuous
@@ -1313,6 +1365,12 @@ let steeringAngleDeg = 0;
 // ever one is in flight and it always reflects the freshest key state.
 async function controlLoop() {
   while (true) {
+    if (interiorMode) {
+      // Driving is disabled in interior view — arrow keys would steer the
+      // car blind, then the orbit camera snaps to a disorienting angle on exit.
+      await new Promise((resolve) => setTimeout(resolve, CONTROL_DT_S * 1000));
+      continue;
+    }
     if (keysDown["ArrowUp"]) {
       await sendAction("set_throttle", { value: 0.6 });
     } else if (keysDown["ArrowDown"]) {
