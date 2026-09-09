@@ -92,9 +92,8 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script>
 // When running locally: keep API = "" (same-origin).
-// After deploying to Render, replace "" with your Render URL,
-// e.g. const API = "https://volvo-xc90-sim.onrender.com";
-const API = "";
+// Deployed backend: https://volvo-xc90-sim.onrender.com
+const API = "https://volvo-xc90-sim.onrender.com";
 const state = { hood_open: false, door_open: {fl:false,fr:false,rl:false,rr:false}, tailgate_open: false,
                 tailgate_target_open: false, tailgate_progress_frac: 1,
                 sunroof_glass_state: "closed", sunroof_glass_target: "closed", sunroof_glass_progress_frac: 1,
