@@ -283,6 +283,7 @@ scene.fog = new THREE.Fog(0x11141a, 20, 90); // pushed out for actual driving di
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 150);
 let camDist = 7.5, camYaw = 0.7, camPitch = 0.45;
 let interiorMode = false;
+let interiorYaw = 0, interiorPitch = 0; // look-around offsets in interior mode
 
 // Fixed-origin orbit -- see the "floating origin" note near carGroup below
 // for why the car itself never actually moves in render space, even though
@@ -300,15 +301,27 @@ function updateCamera() {
       .setFromAxisAngle(new THREE.Vector3(0, 1, 0), carGroup.rotation.y);
     const fwdWorld = carRestForward.clone().applyQuaternion(headingQuat);
 
-    camera.position.set(
-      swWorld.x - fwdWorld.x * 0.35,
-      swWorld.y + 0.3,
-      swWorld.z - fwdWorld.z * 0.35
+    // Seat-position: pull back 0.65 m from wheel hub so the full wheel is
+    // visible, eyes 0.15 m above hub (driver looks over the top of the rim).
+    const eyePos = new THREE.Vector3(
+      swWorld.x - fwdWorld.x * 0.65,
+      swWorld.y + 0.15,
+      swWorld.z - fwdWorld.z * 0.65
     );
+    camera.position.copy(eyePos);
+
+    // Look-around: start from the car's forward direction, then apply the
+    // driver's head-turn (interiorYaw) and head-tilt (interiorPitch) offsets
+    // so drag lets the user look anywhere around the cabin.
+    const yawQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), interiorYaw);
+    const lookFwd = fwdWorld.clone().applyQuaternion(yawQ);
+    const rightAxis = new THREE.Vector3().crossVectors(lookFwd, new THREE.Vector3(0, 1, 0)).normalize();
+    const pitchQ = new THREE.Quaternion().setFromAxisAngle(rightAxis, interiorPitch);
+    const lookDir = lookFwd.clone().applyQuaternion(pitchQ);
     camera.lookAt(
-      swWorld.x + fwdWorld.x * 10,
-      swWorld.y - 0.05,
-      swWorld.z + fwdWorld.z * 10
+      eyePos.x + lookDir.x * 20,
+      eyePos.y + lookDir.y * 20,
+      eyePos.z + lookDir.z * 20
     );
   } else if (!interiorMode) {
     // Offset camYaw by the car's current heading so the orbit camera always
@@ -326,11 +339,16 @@ function updateCamera() {
 
 function toggleInteriorMode() {
   interiorMode = !interiorMode;
-  if (!interiorMode) {
+  if (interiorMode) {
+    camera.fov = 65; // wider FOV for an immersive driver's-eye view
+    interiorYaw = 0; interiorPitch = 0; // reset to looking straight ahead
+  } else {
+    camera.fov = 45; // narrower FOV for the clean exterior orbit view
     // Snap orbit back to a clean angle so the exterior doesn't appear
     // disorienting after the car has turned while in interior mode.
     camYaw = 0.7; camPitch = 0.45; camDist = 7.5;
   }
+  camera.updateProjectionMatrix();
   const btn = document.getElementById("btn-view");
   btn.textContent = interiorMode ? "Exterior view (V)" : "Interior view (V)";
   btn.className = interiorMode ? "active" : "";
@@ -1297,11 +1315,18 @@ let dragging = false, dragged = false, lastX = 0, lastY = 0;
 renderer.domElement.addEventListener("mousedown", (e) => { dragging = true; dragged = false; lastX = e.clientX; lastY = e.clientY; });
 window.addEventListener("mouseup", () => dragging = false);
 window.addEventListener("mousemove", (e) => {
-  if (!dragging || interiorMode) return;
+  if (!dragging) return;
   const dx = e.clientX - lastX, dy = e.clientY - lastY;
   if (Math.abs(dx) + Math.abs(dy) > 3) dragged = true;
-  camYaw -= dx * 0.006;
-  camPitch = Math.max(0.08, Math.min(1.5, camPitch + dy * 0.006));
+  if (interiorMode) {
+    // Head-turn look-around: yaw (left/right) and pitch (up/down), clamped
+    // to a natural range so the driver can't look fully backward.
+    interiorYaw = Math.max(-1.4, Math.min(1.4, interiorYaw - dx * 0.004));
+    interiorPitch = Math.max(-0.6, Math.min(0.5, interiorPitch + dy * 0.004));
+  } else {
+    camYaw -= dx * 0.006;
+    camPitch = Math.max(0.08, Math.min(1.5, camPitch + dy * 0.006));
+  }
   lastX = e.clientX; lastY = e.clientY;
   updateCamera();
 });
