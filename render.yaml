@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: volvo-xc90-sim
+    runtime: python
+    buildCommand: pip install numpy
+    startCommand: python3 web_ui/server.py

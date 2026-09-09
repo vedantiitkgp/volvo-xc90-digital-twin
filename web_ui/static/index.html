@@ -91,6 +91,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script>
+// When running locally: keep API = "" (same-origin).
+// After deploying to Render, replace "" with your Render URL,
+// e.g. const API = "https://volvo-xc90-sim.onrender.com";
 const API = "";
 const state = { hood_open: false, door_open: {fl:false,fr:false,rl:false,rr:false}, tailgate_open: false,
                 tailgate_target_open: false, tailgate_progress_frac: 1,
@@ -121,7 +124,19 @@ function diffAndLog(oldS, newS) {
   });
   if (oldS.sunroof_glass_state !== newS.sunroof_glass_state) logEvent("Sunroof glass: " + newS.sunroof_glass_state);
   if (oldS.sunroof_shade_open !== newS.sunroof_shade_open) logEvent("Sunroof shade " + (newS.sunroof_shade_open ? "opened" : "closed"));
-  if (oldS.engine_running !== newS.engine_running) logEvent(newS.engine_running ? "Engine started" : "Engine stopped");
+  // Real internal mechanical events, not just body controls -- ignition is
+  // a genuine off/cranking/run state machine tied to the actual starter
+  // relay (see xc90_sim.body.Ignition / Simulation.step's starter-relay
+  // energizing), and gear/converter-lock are the real automatic
+  // transmission's own state, not just the PRND selector.
+  if (oldS.ignition_state !== newS.ignition_state) {
+    if (newS.ignition_state === "cranking") logEvent("Starter engaged — cranking");
+    else if (newS.ignition_state === "run") logEvent("Engine caught — running at " + newS.engine_rpm + " rpm");
+    else logEvent("Ignition off");
+  }
+  if (oldS.transmission_gear !== newS.transmission_gear) logEvent("Transmission shifted to gear " + newS.transmission_gear);
+  if (oldS.converter_locked !== newS.converter_locked) logEvent("Torque converter " + (newS.converter_locked ? "locked" : "unlocked"));
+  if (oldS.engine_auto_stopped !== newS.engine_auto_stopped) logEvent(newS.engine_auto_stopped ? "Engine auto-stopped (Start-Stop)" : "Engine auto-restarted (Start-Stop)");
   if (oldS.gear_selector !== newS.gear_selector) logEvent("Gear selector: " + newS.gear_selector);
   if (oldS.battery_disconnected !== newS.battery_disconnected) logEvent(newS.battery_disconnected ? "Battery disconnected" : "Battery reconnected");
   if (oldS.engine_removed !== newS.engine_removed) logEvent(newS.engine_removed ? "Engine removed" : "Engine reinstalled");
@@ -583,7 +598,7 @@ const sunroofShade = new THREE.Mesh(
 sunroofGroup.add(sunroofShade);
 
 const gltfLoader = new THREE.GLTFLoader();
-gltfLoader.load("static/models/volvo_xc90_inscription.glb", (gltf) => {
+gltfLoader.load("models/volvo_xc90_inscription.glb", (gltf) => {
   const root = gltf.scene;
   root.traverse((obj) => { if (shouldHideNode(obj.name)) obj.visible = false; });
 
@@ -1286,27 +1301,43 @@ const STEER_MAX_DEG = 150;
 const CONTROL_DT_S = 0.1;
 let steeringAngleDeg = 0;
 
-setInterval(() => {
-  if (keysDown["ArrowUp"]) {
-    sendAction("set_throttle", { value: 0.6 });
-  } else if (keysDown["ArrowDown"]) {
-    sendAction("set_brake", { on: true });
-  } else {
-    sendAction("set_throttle", { value: 0.0 });
-  }
+// A plain setInterval fired a new fetch every tick regardless of whether
+// the previous one had finished -- if an in-flight "throttle=0.6" request
+// (sent right before a key was released) happened to arrive AFTER a later
+// "throttle=0" request (e.g. one network round-trip was briefly slower),
+// the stale command would win and silently re-apply throttle after the
+// key was already let go. That's exactly what looked like "car speeds up
+// again on its own after I brake and let go" -- a real out-of-order async
+// race, not engine-creep (verified creep alone only reaches ~4 mph and
+// plateaus; this was climbing through multiple gear upshifts). Awaiting
+// each request before deciding/sending the next serializes them, so only
+// ever one is in flight and it always reflects the freshest key state.
+async function controlLoop() {
+  while (true) {
+    if (keysDown["ArrowUp"]) {
+      await sendAction("set_throttle", { value: 0.6 });
+    } else if (keysDown["ArrowDown"]) {
+      await sendAction("set_brake", { on: true });
+    } else {
+      await sendAction("set_throttle", { value: 0.0 });
+    }
 
-  // xc90_sim's set_steering_wheel_angle_deg sign convention turned out
-  // opposite to the arrow-key direction (Left was turning the car right and
-  // vice versa) -- flipped which key increments/decrements here.
-  if (keysDown["ArrowLeft"]) {
-    steeringAngleDeg = Math.min(STEER_MAX_DEG, steeringAngleDeg + STEER_RATE_DEG_S * CONTROL_DT_S);
-  } else if (keysDown["ArrowRight"]) {
-    steeringAngleDeg = Math.max(-STEER_MAX_DEG, steeringAngleDeg - STEER_RATE_DEG_S * CONTROL_DT_S);
-  } else {
-    steeringAngleDeg *= 0.85; // self-centers when released, like a real steering system
+    // xc90_sim's set_steering_wheel_angle_deg sign convention turned out
+    // opposite to the arrow-key direction (Left was turning the car right
+    // and vice versa) -- flipped which key increments/decrements here.
+    if (keysDown["ArrowLeft"]) {
+      steeringAngleDeg = Math.min(STEER_MAX_DEG, steeringAngleDeg + STEER_RATE_DEG_S * CONTROL_DT_S);
+    } else if (keysDown["ArrowRight"]) {
+      steeringAngleDeg = Math.max(-STEER_MAX_DEG, steeringAngleDeg - STEER_RATE_DEG_S * CONTROL_DT_S);
+    } else {
+      steeringAngleDeg *= 0.85; // self-centers when released, like a real steering system
+    }
+    await sendAction("set_steering", { angle_deg: steeringAngleDeg });
+
+    await new Promise((resolve) => setTimeout(resolve, CONTROL_DT_S * 1000));
   }
-  sendAction("set_steering", { angle_deg: steeringAngleDeg });
-}, CONTROL_DT_S * 1000);
+}
+controlLoop();
 
 applyState();
 pollState();

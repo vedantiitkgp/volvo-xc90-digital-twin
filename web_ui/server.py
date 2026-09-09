@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from xc90_sim.sim.simulation import Simulation  # noqa: E402
 
-PORT = 8765
+PORT = int(os.environ.get("PORT", 8765))
 TICK_DT = 0.02
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -66,6 +66,9 @@ def _snapshot_state():
             "engine_rpm": round(sim.engine.rpm, 0),
             "speed_mph": round(t["speed_mph"], 1),
             "gear_selector": sim.gear_selector.position,
+            "transmission_gear": t["gear"],
+            "converter_locked": t["converter_locked"],
+            "engine_auto_stopped": t["engine_auto_stopped"],
             "brake_on": sim._manual_brake > 0.5,
             "world_x_m": t["world_x_m"],
             "world_y_m": t["world_y_m"],
@@ -156,13 +159,24 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # quiet — telemetry polling would otherwise spam the console
 
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
     def _send_json(self, obj, status=200):
         body = json.dumps(obj).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
 
     def do_GET(self):
         if self.path == "/state":
@@ -174,6 +188,12 @@ class Handler(BaseHTTPRequestHandler):
             # assets — models/*.glb in particular) by real file extension,
             # not just the one hardcoded index.html route above.
             rel_path = self.path[len("/static/"):].split("?", 1)[0]
+            self._serve_static(rel_path, _guess_content_type(rel_path))
+        elif self.path.startswith("/models/"):
+            # Also serves /models/ directly (same as /static/models/) so
+            # that the GitHub Pages build (which strips the /static/ prefix)
+            # can load .glb assets without a redirect.
+            rel_path = "models/" + self.path[len("/models/"):].split("?", 1)[0]
             self._serve_static(rel_path, _guess_content_type(rel_path))
         else:
             self.send_response(404)
@@ -214,7 +234,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     threading.Thread(target=_run_sim_loop, daemon=True).start()
-    server = ThreadingHTTPServer(("localhost", PORT), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"XC90 sim UI running at http://localhost:{PORT}/")
     try:
         server.serve_forever()
