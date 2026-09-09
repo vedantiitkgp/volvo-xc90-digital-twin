@@ -85,6 +85,7 @@
   <div id="panel-title">View</div>
   <div id="controls">
     <button id="btn-view">Interior view (V)</button>
+    <button id="btn-reset-sim">Reset sim</button>
   </div>
 
   <div id="panel-title">Activity log</div>
@@ -284,6 +285,8 @@ const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHei
 let camDist = 7.5, camYaw = 0.7, camPitch = 0.45;
 let interiorMode = false;
 let interiorYaw = 0, interiorPitch = 0; // look-around offsets in interior mode
+let interiorSeat = 'fl'; // fl=driver  fr=passenger  rl=rear-left  rr=rear-right
+const SEAT_LABELS = { fl: 'Driver', fr: 'Passenger', rl: 'Rear Left', rr: 'Rear Right' };
 
 // Fixed-origin orbit -- see the "floating origin" note near carGroup below
 // for why the car itself never actually moves in render space, even though
@@ -296,18 +299,30 @@ function updateCamera() {
     const swWorld = new THREE.Vector3();
     steeringWheelNode.getWorldPosition(swWorld);
 
-    // Car's current forward in world space (accounts for heading rotation)
+    // Car's current forward and width axes in world space
     const headingQuat = new THREE.Quaternion()
       .setFromAxisAngle(new THREE.Vector3(0, 1, 0), carGroup.rotation.y);
     const fwdWorld = carRestForward.clone().applyQuaternion(headingQuat);
+    // widthAxisVector points FL→FR direction (pFL-pFR); negate to go right
+    const widthWorld = widthAxisVector.clone().applyQuaternion(headingQuat);
 
-    // Seat-position: pull back 0.65 m from wheel hub so the full wheel is
-    // visible, eyes 0.15 m above hub (driver looks over the top of the rim).
-    const eyePos = new THREE.Vector3(
+    // Driver (FL) anchor: 0.65 m behind wheel hub, 0.15 m above it
+    const flEye = new THREE.Vector3(
       swWorld.x - fwdWorld.x * 0.65,
       swWorld.y + 0.15,
       swWorld.z - fwdWorld.z * 0.65
     );
+    // Cross-cabin width between driver and passenger (≈ 0.65 m for XC90)
+    const SW = 0.65;
+    // Rearward offset from front seats to rear seats (≈ 0.95 m)
+    const RO = 0.95;
+    const seatOffsets = {
+      fl: new THREE.Vector3(0, 0, 0),
+      fr: widthWorld.clone().multiplyScalar(-SW),            // move right
+      rl: fwdWorld.clone().multiplyScalar(-RO),              // move back
+      rr: widthWorld.clone().multiplyScalar(-SW).addScaledVector(fwdWorld, -RO),
+    };
+    const eyePos = flEye.clone().add(seatOffsets[interiorSeat] || seatOffsets.fl);
     camera.position.copy(eyePos);
 
     // Look-around: start from the car's forward direction, then apply the
@@ -342,6 +357,7 @@ function toggleInteriorMode() {
   if (interiorMode) {
     camera.fov = 65; // wider FOV for an immersive driver's-eye view
     interiorYaw = 0; interiorPitch = 0; // reset to looking straight ahead
+    interiorSeat = 'fl'; // always start in driver seat
   } else {
     camera.fov = 45; // narrower FOV for the clean exterior orbit view
     // Snap orbit back to a clean angle so the exterior doesn't appear
@@ -349,9 +365,25 @@ function toggleInteriorMode() {
     camYaw = 0.7; camPitch = 0.45; camDist = 7.5;
   }
   camera.updateProjectionMatrix();
+  updateInteriorBtn();
+}
+
+function updateInteriorBtn() {
   const btn = document.getElementById("btn-view");
-  btn.textContent = interiorMode ? "Exterior view (V)" : "Interior view (V)";
-  btn.className = interiorMode ? "active" : "";
+  if (interiorMode) {
+    btn.textContent = `Exterior view (V) — ${SEAT_LABELS[interiorSeat]} [1-4]`;
+    btn.className = "active";
+  } else {
+    btn.textContent = "Interior view (V)";
+    btn.className = "";
+  }
+}
+
+function switchSeat(seat) {
+  if (!interiorMode) return;
+  interiorSeat = seat;
+  interiorYaw = 0; interiorPitch = 0;
+  updateInteriorBtn();
 }
 // Deferred until after carGroup exists (below) -- calling it here threw
 // "Cannot access 'carGroup' before initialization" since carGroup is a
@@ -1355,9 +1387,14 @@ const keysDown = {};
 window.addEventListener("keydown", (e) => {
   keysDown[e.key] = true;
   if (e.key === "v" || e.key === "V") toggleInteriorMode();
+  if (e.key === "1") switchSeat("fl");
+  if (e.key === "2") switchSeat("fr");
+  if (e.key === "3") switchSeat("rl");
+  if (e.key === "4") switchSeat("rr");
 });
 window.addEventListener("keyup", (e) => { keysDown[e.key] = false; });
 document.getElementById("btn-view").addEventListener("click", toggleInteriorMode);
+document.getElementById("btn-reset-sim").addEventListener("click", () => sendAction("reset_sim"));
 // If the tab loses focus while a key is physically still held (switching
 // windows, clicking elsewhere), the browser can stop delivering that key's
 // keyup event -- it stays stuck "down" here forever, sending continuous

@@ -151,6 +151,13 @@ def _do_action(name, payload):
                 sim.disconnect_relay(rname)
         elif name == "refill_washer_fluid":
             sim.refill_washer_fluid()
+        elif name == "reset_sim":
+            # Replace the live simulation with a fresh one so heading, speed,
+            # position and all mechanical state return to zero — useful when
+            # the car has been driven far and the shared Render instance has
+            # accumulated state that confuses new viewers.
+            global sim
+            sim = Simulation()
         else:
             raise ValueError(f"unknown action: {name!r}")
 
