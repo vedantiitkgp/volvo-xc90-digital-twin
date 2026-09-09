@@ -222,7 +222,7 @@ async function pollState() {
     renderHud();
     applyState();
   } catch (e) { /* server not reachable yet */ }
-  setTimeout(pollState, 200);
+  setTimeout(pollState, 100);
 }
 async function sendAction(action, extra) {
   const body = Object.assign({ action }, extra || {});
@@ -1383,52 +1383,42 @@ gltfLoader.load("models/volvo_xc90_inscription.glb", (gltf) => {
 // Exact angles confirmed by hand-tuning (previously via a debug slider,
 // now removed) -- real verified values, not a computed openSign guess.
 const HOOD_OPEN_DEG = -50, TAILGATE_OPEN_DEG = 55;
-function applyState() {
-  // Real heading from xc90_sim's own 3-DOF vehicle dynamics (body.heading_rad)
-  // -- not a fake demo path. heading_deg is 0 at sim start, which is exactly
-  // this model's already-tuned rest orientation, so rotating carGroup by it
-  // doesn't disturb anything below that assumes the model's own local
-  // forward/width directions (those stay correct relative to carGroup
-  // regardless of carGroup's own spin). Position is NOT applied to
-  // carGroup directly -- see the floating-origin note above buildRoadTexture:
-  // the car mesh stays at the origin, and the ground's texture scrolls by
-  // the real world_x_m/world_y_m instead, so fine local geometry (door
-  // gaps, trim) never suffers float32 precision loss from a huge translation.
-  carGroup.rotation.y = THREE.MathUtils.degToRad(state.heading_deg);
-  // xc90_sim's own ground-plane axes (world_x_m = forward at heading 0,
-  // world_y_m = left at heading 0 -- see vehicle_body.py's integration)
-  // don't line up with Three's world X/Z the way a naive 1:1 mapping
-  // assumes: this model's real forward axis is Z, not X (established from
-  // its own bumper geometry way earlier), so driving forward was scrolling
-  // the wrong screen axis and looked like sliding sideways. Decomposing
-  // through the model's real forward/left vectors instead makes this
-  // correct regardless of which axis the model happens to be authored on.
-  const dispX = state.world_x_m * carRestForward.x + state.world_y_m * widthAxisVector.x;
-  const dispZ = state.world_x_m * carRestForward.z + state.world_y_m * widthAxisVector.z;
-  // Sideways axis confirmed correct; forward/back was inverted (drove
-  // forward but the ground scrolled as if reversing) -- flipped this term.
-  roadTexture.offset.set(-dispX / ROAD_TILE_SIZE_M, -dispZ / ROAD_TILE_SIZE_M);
+// ---------- 60fps smooth motion interpolation ----------
+// Heading, road scroll, wheel spin, and steering wheel are updated every
+// render frame here (not just on 100ms state polls) to give silky motion.
+// The ground plane is rotated with the car so lane markings always run
+// forward; distance_m (path length) drives the scroll instead of
+// world_x_m/world_y_m, which included lateral vy_mps "sliding" from the
+// physics sim's tyre slip model and made turns look like skids.
+let _smoothHeadingRad = 0, _smoothDistM = 0;
+function applySmoothState() {
+  const ALPHA = 0.30; // per-frame lerp (≈40ms time-constant at 60fps)
 
-  // Real wheel rotation: angle = real distance traveled / real rolling
-  // radius, not a guessed spin rate -- derived from the same distance_m
-  // xc90_sim already tracks (odometer-equivalent), so the wheels visually
-  // roll exactly as far as the car has actually gone. Composed ON TOP of
-  // each wheel's cached rest orientation (see where wheelNodes is built) --
-  // setting the quaternion directly, replacing that rest orientation, is
-  // what caused the wheel (and the whole scene once it deformed) to render
-  // wrong the first time.
-  const wheelSpinQuat = new THREE.Quaternion().setFromAxisAngle(widthAxisVector, state.distance_m / WHEEL_ROLLING_RADIUS_M);
-  wheelNodes.forEach((w) => w.quaternion.copy(wheelSpinQuat).multiply(w.userData.restQuaternion));
+  // Shortest-arc heading lerp
+  let dH = THREE.MathUtils.degToRad(state.heading_deg) - _smoothHeadingRad;
+  while (dH >  Math.PI) dH -= 2 * Math.PI;
+  while (dH < -Math.PI) dH += 2 * Math.PI;
+  _smoothHeadingRad += dH * ALPHA;
 
-  // Real in-cabin steering wheel, turning with the real steering_wheel_deg
-  // telemetry -- rotated around the car's own forward axis (the column's
-  // real rake angle isn't modeled, just its rotation), composed on top of
-  // its cached rest orientation like the road wheels above.
+  _smoothDistM += (state.distance_m - _smoothDistM) * ALPHA;
+
+  carGroup.rotation.y = _smoothHeadingRad;
+  // Rotate ground with car: lane markings always appear to run forward.
+  ground.rotation.y = _smoothHeadingRad;
+  roadTexture.offset.set(0, -_smoothDistM / ROAD_TILE_SIZE_M);
+
+  const wheelSpinQuat = new THREE.Quaternion()
+    .setFromAxisAngle(widthAxisVector, _smoothDistM / WHEEL_ROLLING_RADIUS_M);
+  wheelNodes.forEach(w => w.quaternion.copy(wheelSpinQuat).multiply(w.userData.restQuaternion));
+
   if (steeringWheelNode) {
-    const steerQuat = new THREE.Quaternion().setFromAxisAngle(carRestForward, THREE.MathUtils.degToRad(-state.steering_wheel_deg));
+    const steerQuat = new THREE.Quaternion()
+      .setFromAxisAngle(carRestForward, THREE.MathUtils.degToRad(-state.steering_wheel_deg));
     steeringWheelNode.quaternion.copy(steerQuat).multiply(steeringWheelNode.userData.restQuaternion);
   }
+}
 
+function applyState() {
   hoodGroup.quaternion.setFromAxisAngle(widthAxisVector, state.hood_open ? THREE.MathUtils.degToRad(HOOD_OPEN_DEG) : 0);
   // Real power tailgate: a genuine 6-second timed actuation (see
   // xc90_sim.body.Closures), not instant like the manually-lifted hood --
@@ -1608,7 +1598,8 @@ window.addEventListener("resize", () => {
 
 (function animate() {
   requestAnimationFrame(animate);
-  updateCamera(); // car moves on its own via real sim state, not just user input, so this can't only run on drag/wheel
+  applySmoothState(); // 60fps heading + road scroll interpolation
+  updateCamera();
   renderer.render(scene, camera);
 })();
 
