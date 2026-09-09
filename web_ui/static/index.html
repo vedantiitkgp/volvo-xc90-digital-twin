@@ -356,7 +356,7 @@ function toggleInteriorMode() {
   interiorMode = !interiorMode;
   if (interiorMode) {
     camera.fov = 65; // wider FOV for an immersive driver's-eye view
-    interiorYaw = 0; interiorPitch = 0; // reset to looking straight ahead
+    interiorYaw = 0; interiorPitch = -0.18; // tilt down so the steering wheel is centred in the view
     interiorSeat = 'fl'; // always start in driver seat
   } else {
     camera.fov = 45; // narrower FOV for the clean exterior orbit view
@@ -382,7 +382,7 @@ function updateInteriorBtn() {
 function switchSeat(seat) {
   if (!interiorMode) return;
   interiorSeat = seat;
-  interiorYaw = 0; interiorPitch = 0;
+  interiorYaw = 0; interiorPitch = -0.18;
   updateInteriorBtn();
 }
 // Deferred until after carGroup exists (below) -- calling it here threw
@@ -1427,12 +1427,6 @@ let steeringAngleDeg = 0;
 // ever one is in flight and it always reflects the freshest key state.
 async function controlLoop() {
   while (true) {
-    if (interiorMode) {
-      // Driving is disabled in interior view — arrow keys would steer the
-      // car blind, then the orbit camera snaps to a disorienting angle on exit.
-      await new Promise((resolve) => setTimeout(resolve, CONTROL_DT_S * 1000));
-      continue;
-    }
     if (keysDown["ArrowUp"]) {
       await sendAction("set_throttle", { value: 0.6 });
     } else if (keysDown["ArrowDown"]) {
