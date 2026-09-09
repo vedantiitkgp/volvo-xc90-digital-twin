@@ -19,7 +19,19 @@
   }
   #log div { padding: 1px 0; border-bottom: 1px solid #1a1d22; }
   #log div:last-child { border-bottom: none; }
-  #hud h1 { font-size: 15px; margin: 0 0 10px; color: #9fd3ff; }
+  #hud-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  #hud h1 { font-size: 15px; margin: 0; color: #9fd3ff; }
+  #hud-toggle {
+    display: none; background: none; border: none; color: #9fd3ff;
+    font-size: 20px; padding: 2px 6px; min-height: unset; cursor: pointer;
+    line-height: 1; flex-shrink: 0;
+  }
+  #hud.collapsed #hud-body { display: none; }
+  /* On touch/mobile: show toggle, hide hint, default hud to collapsed */
+  @media (hover: none), (pointer: coarse) {
+    #hud-toggle { display: block; }
+    #hint { display: none; }
+  }
   .row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #1c1f24; }
   .row span:first-child { color: #9aa2ad; }
   .warn { color: #ff6b6b; font-weight: 600; }
@@ -67,7 +79,11 @@
 <body>
 <div id="scene"></div>
 <div id="hud">
-  <h1>2016 Volvo XC90 T6 — Digital Twin</h1>
+  <div id="hud-header">
+    <h1>2016 Volvo XC90 T6 — Digital Twin</h1>
+    <button id="hud-toggle">☰</button>
+  </div>
+  <div id="hud-body">
   <div class="row"><span>Ignition</span><span id="v-ignition">—</span></div>
   <div class="row"><span>Engine RPM</span><span id="v-rpm">—</span></div>
   <div class="row"><span>Speed</span><span id="v-speed">—</span></div>
@@ -118,6 +134,7 @@
   <div id="panel-title">Activity log</div>
   <div id="log"></div>
 
+  </div><!-- #hud-body -->
 </div>
 <div id="hint">Drag to orbit · scroll/pinch to zoom · click parts · start engine, shift to D, then arrow keys or D-pad (↑ throttle · ↓ brake · ←→ steer)</div>
 
@@ -1604,6 +1621,17 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keyup", (e) => { keysDown[e.key] = false; });
 document.getElementById("btn-view").addEventListener("click", toggleInteriorMode);
 document.getElementById("btn-reset-sim").addEventListener("click", () => sendAction("reset_sim"));
+
+// HUD collapse toggle — default collapsed on touch/mobile devices
+const hudEl = document.getElementById("hud");
+const hudToggleBtn = document.getElementById("hud-toggle");
+if (window.matchMedia("(hover: none), (pointer: coarse)").matches) {
+  hudEl.classList.add("collapsed");
+}
+hudToggleBtn.addEventListener("click", () => {
+  hudEl.classList.toggle("collapsed");
+  hudToggleBtn.textContent = hudEl.classList.contains("collapsed") ? "☰" : "✕";
+});
 // If the tab loses focus while a key is physically still held (switching
 // windows, clicking elsewhere), the browser can stop delivering that key's
 // keyup event -- it stays stuck "down" here forever, sending continuous
