@@ -1975,9 +1975,9 @@ window.addEventListener("blur", () => { for (const k in keysDown) keysDown[k] = 
 // it trivial to accidentally command a full-lock turn from a quick key tap
 // at speed. Capped lower and slowed down so normal taps read as a normal
 // road turn instead of a slam-the-wheel maneuver.
-const STEER_RATE_DEG_S = 500;
+const STEER_RATE_DEG_S = 600;
 const STEER_MAX_DEG = 450;
-const CONTROL_DT_S = 0.1;
+const CONTROL_DT_S = 0.05;
 let steeringAngleDeg = 0;
 
 // A plain setInterval fired a new fetch every tick regardless of whether
@@ -1993,22 +1993,30 @@ let steeringAngleDeg = 0;
 // ever one is in flight and it always reflects the freshest key state.
 async function controlLoop() {
   while (true) {
+    // Compute desired throttle/brake action this tick
+    let throttleAction;
     if (keysDown["ArrowUp"]) {
-      await sendAction("set_throttle", { value: 0.6 });
+      throttleAction = sendAction("set_throttle", { value: 0.6 });
     } else if (keysDown["ArrowDown"]) {
-      await sendAction("set_brake", { on: true });
+      throttleAction = sendAction("set_brake", { on: true });
     } else {
-      await sendAction("set_throttle", { value: 0.0 });
+      throttleAction = sendAction("set_throttle", { value: 0.0 });
     }
 
+    // Update steering angle locally this tick
     if (keysDown["ArrowRight"]) {
       steeringAngleDeg = Math.min(STEER_MAX_DEG, steeringAngleDeg + STEER_RATE_DEG_S * CONTROL_DT_S);
     } else if (keysDown["ArrowLeft"]) {
       steeringAngleDeg = Math.max(-STEER_MAX_DEG, steeringAngleDeg - STEER_RATE_DEG_S * CONTROL_DT_S);
     } else {
-      steeringAngleDeg *= 0.85; // self-centers when released, like a real steering system
+      steeringAngleDeg *= 0.82; // self-centers when released
     }
-    await sendAction("set_steering", { angle_deg: -steeringAngleDeg });
+    const steerAction = sendAction("set_steering", { angle_deg: -steeringAngleDeg });
+
+    // Await both in parallel — one RTT instead of two, eliminates the main
+    // source of jitter while still serialising ticks (next tick only starts
+    // after both responses arrive, so no stale-command race).
+    await Promise.all([throttleAction, steerAction]);
 
     await new Promise((resolve) => setTimeout(resolve, CONTROL_DT_S * 1000));
   }
