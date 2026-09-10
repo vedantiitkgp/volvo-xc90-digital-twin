@@ -1885,6 +1885,14 @@ window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// Hoisted before animate() so both animate() and controlLoop() can use them
+// without hitting a temporal dead zone (const/let are not hoisted like var).
+const keysDown = {};
+const STEER_RATE_DEG_S = 800; // deg/s — applied at 60 fps inside animate()
+const STEER_MAX_DEG    = 450;
+const CONTROL_DT_S     = 0.05;
+let   steeringAngleDeg = 0;
+
 (function animate() {
   requestAnimationFrame(animate);
   applySmoothState(); // 60fps heading + road scroll interpolation
@@ -1931,6 +1939,17 @@ window.addEventListener("resize", () => {
     b.group.rotation.y = Math.atan2(b.vx, b.vz);
   });
 
+  // Steering updated every frame — instant response to key/D-pad input,
+  // no waiting for network. controlLoop just reads and sends this value.
+  const _steerStep = STEER_RATE_DEG_S / 60;
+  if (keysDown["ArrowRight"]) {
+    steeringAngleDeg = Math.min(STEER_MAX_DEG, steeringAngleDeg + _steerStep);
+  } else if (keysDown["ArrowLeft"]) {
+    steeringAngleDeg = Math.max(-STEER_MAX_DEG, steeringAngleDeg - _steerStep);
+  } else {
+    steeringAngleDeg *= 0.88;
+  }
+
   renderer.render(scene, camera);
 })();
 
@@ -1938,7 +1957,7 @@ window.addEventListener("resize", () => {
 // Arrow Up/Down = throttle/brake, Left/Right = steering -- polled on an
 // interval (not per-keydown-event) so holding a key sends a continuous
 // command, the same way a held pedal or held wheel input would.
-const keysDown = {};
+// (keysDown declared above animate() to avoid temporal dead zone)
 window.addEventListener("keydown", (e) => {
   keysDown[e.key] = true;
   if (e.key === "v" || e.key === "V") toggleInteriorMode();
@@ -1975,10 +1994,7 @@ window.addEventListener("blur", () => { for (const k in keysDown) keysDown[k] = 
 // it trivial to accidentally command a full-lock turn from a quick key tap
 // at speed. Capped lower and slowed down so normal taps read as a normal
 // road turn instead of a slam-the-wheel maneuver.
-const STEER_RATE_DEG_S = 600;
-const STEER_MAX_DEG = 450;
-const CONTROL_DT_S = 0.05;
-let steeringAngleDeg = 0;
+// (STEER_RATE_DEG_S / STEER_MAX_DEG / CONTROL_DT_S / steeringAngleDeg declared above animate())
 
 // A plain setInterval fired a new fetch every tick regardless of whether
 // the previous one had finished -- if an in-flight "throttle=0.6" request
@@ -2003,14 +2019,7 @@ async function controlLoop() {
       throttleAction = sendAction("set_throttle", { value: 0.0 });
     }
 
-    // Update steering angle locally this tick
-    if (keysDown["ArrowRight"]) {
-      steeringAngleDeg = Math.min(STEER_MAX_DEG, steeringAngleDeg + STEER_RATE_DEG_S * CONTROL_DT_S);
-    } else if (keysDown["ArrowLeft"]) {
-      steeringAngleDeg = Math.max(-STEER_MAX_DEG, steeringAngleDeg - STEER_RATE_DEG_S * CONTROL_DT_S);
-    } else {
-      steeringAngleDeg *= 0.82; // self-centers when released
-    }
+    // Steering angle is updated at 60 fps in animate() — just send current value.
     const steerAction = sendAction("set_steering", { angle_deg: -steeringAngleDeg });
 
     // Await both in parallel — one RTT instead of two, eliminates the main
