@@ -591,45 +591,45 @@ scene.add(ground);
     const _mbSize = new THREE.Vector3();
     _mbbox.getSize(_mbSize);
 
-    // Scale so model is 90 m tall — tall enough to be prominent without
-    // overshooting the camera when placed at ±80 m from the road centre.
-    const _mScale  = 90 / _mbSize.y;
-    const _tileDep = _mbSize.z * _mScale; // Z footprint of one tile (metres)
-    const _tileWid = _mbSize.x * _mScale; // X footprint
+    // Scale to 80 m tall. At x=±200 m that's arctan(80/200)=22° elevation —
+    // clearly visible background ridgeline, no overhead clip.
+    const _mScale  = 80 / _mbSize.y;
+    const _tileDep = _mbSize.z * _mScale;
 
-    // Y offset so bbox.min sits at road level (y = 0)
+    // Y offset: bbox bottom sits at road level
     const _yOff = -_mbbox.min.y * _mScale;
 
-    // Override ALL materials with a flat earthy tone so the model's own
-    // white/pale texture doesn't blow out under the intense DirectionalLight.
-    // MeshLambertMaterial with a dark brown-gold reads as dry California hills.
+    // Bbox centre in scaled space — used to truly centre the model at the
+    // desired X position rather than placing it by raw origin (which caused
+    // geometry to spill inward over the road).
+    const _bCx = _mbbox.getCenter(new THREE.Vector3()).x * _mScale;
+    const _bCz = _mbbox.getCenter(new THREE.Vector3()).z * _mScale;
+
+    // Material override — dark earthy tone, no relation to original GLB colour
     const _mMat = new THREE.MeshLambertMaterial({ color: 0x2e2408, fog: true });
-    proto.traverse(n => {
-      if (n.isMesh) n.material = _mMat;
-    });
+    proto.traverse(n => { if (n.isMesh) n.material = _mMat; });
 
-    // Place mountain origin at ±80 m — close enough to be clearly visible,
-    // far enough that a 90 m tall model doesn't fly over the camera.
-    const _eastX =  80;
-    const _westX = -80;
+    // Visual centre of mountain range at ±200 m — prevents any tile from
+    // clipping overhead even when the GLB has wide/deep geometry.
+    const _eastX =  200;
+    const _westX = -200;
 
-    // Number of tiles to fill ±650 m with one extra on each end (hidden by fog)
     const _half = Math.ceil(650 / _tileDep) + 1;
 
     for (let i = -_half; i <= _half; i++) {
       const z = i * _tileDep;
 
-      // East tile
+      // East — centre bbox on _eastX / z
       const e = proto.clone(true);
       e.scale.set(_mScale, _mScale, _mScale);
-      e.position.set(_eastX, _yOff, z);
+      e.position.set(_eastX - _bCx, _yOff, z - _bCz);
       scene.add(e);
 
-      // West tile — rotated 180° so it presents a different face to the road
+      // West — rotated 180°, so X centre offset is negated
       const w = proto.clone(true);
       w.scale.set(_mScale, _mScale, _mScale);
       w.rotation.y = Math.PI;
-      w.position.set(_westX, _yOff, z);
+      w.position.set(_westX + _bCx, _yOff, z - _bCz);
       scene.add(w);
     }
   });
