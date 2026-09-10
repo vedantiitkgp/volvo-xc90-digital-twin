@@ -217,6 +217,7 @@ async function pollState() {
   try {
     const r = await fetch(API + "/state");
     Object.assign(state, await r.json());
+    stateLoaded = true;
     diffAndLog(prevLogState, state);
     prevLogState = JSON.parse(JSON.stringify(state));
     renderHud();
@@ -360,7 +361,7 @@ function updateCamera() {
 
     // Car's current forward and width axes in world space
     const headingQuat = new THREE.Quaternion()
-      .setFromAxisAngle(new THREE.Vector3(0, 1, 0), carGroup.rotation.y);
+      .setFromAxisAngle(new THREE.Vector3(0, 1, 0), _smoothHeadingRad);
     const fwdWorld = carRestForward.clone().applyQuaternion(headingQuat);
     // widthAxisVector points FL→FR direction (pFL-pFR); negate to go right
     const widthWorld = widthAxisVector.clone().applyQuaternion(headingQuat);
@@ -398,9 +399,8 @@ function updateCamera() {
       eyePos.z + lookDir.z * 20
     );
   } else if (!interiorMode) {
-    // Offset camYaw by the car's current heading so the orbit camera always
-    // stays car-relative (behind/beside the car) instead of fixed in world
-    // space — without this the car visually spins as heading_deg changes.
+    // Offset camYaw by the car's current heading so the camera stays
+    // car-relative (always behind the car) as heading_deg changes.
     const h = carGroup.rotation.y;
     camera.position.set(
       camDist * Math.cos(camPitch) * Math.sin(camYaw + h),
@@ -460,6 +460,8 @@ renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.3;
 document.getElementById("scene").appendChild(renderer.domElement);
+renderer.domElement.style.opacity = '0';
+renderer.domElement.style.transition = 'opacity 0.25s ease';
 
 // Kept lower than the engine bay's own dedicated point lights (below) --
 // this is exterior/ambient-only lighting, so dialing it down brightens the
@@ -513,6 +515,7 @@ scene.add(ground);
 // give the same visual sense of movement without ever moving the actual
 // car mesh far from the origin.
 const carGroup = new THREE.Group();
+carGroup.visible = false; // hidden until first server state arrives (prevents wrong-heading flash)
 scene.add(carGroup);
 updateCamera();
 
@@ -1385,13 +1388,34 @@ gltfLoader.load("models/volvo_xc90_inscription.glb", (gltf) => {
 const HOOD_OPEN_DEG = -50, TAILGATE_OPEN_DEG = 55;
 // ---------- 60fps smooth motion interpolation ----------
 // Heading, road scroll, wheel spin, and steering wheel are updated every
-// render frame here (not just on 100ms state polls) to give silky motion.
-// The ground plane is rotated with the car so lane markings always run
-// forward; distance_m (path length) drives the scroll instead of
-// world_x_m/world_y_m, which included lateral vy_mps "sliding" from the
-// physics sim's tyre slip model and made turns look like skids.
+// render frame here for silky motion. Road offset is computed by projecting
+// each frame's incremental world displacement onto the car's current forward
+// direction only — this strips out the lateral vy_mps component that the
+// physics sim's tyre slip model produces and made turns look like skids.
+let stateLoaded = false;        // true after first successful pollState()
+let _smoothInitialized = false;
 let _smoothHeadingRad = 0, _smoothDistM = 0;
+let _smoothWorldX = 0, _smoothWorldY = 0; // lerped world position
+let _roadOffU = 0, _roadOffV = 0;         // accumulated texture offset (forward-only)
 function applySmoothState() {
+  if (!stateLoaded) return; // wait for at least one server response
+  // First call: snap to actual server state (no lerp from defaults).
+  if (!_smoothInitialized) {
+    _smoothHeadingRad = THREE.MathUtils.degToRad(state.heading_deg);
+    _smoothWorldX = state.world_x_m;
+    _smoothWorldY = state.world_y_m;
+    _smoothDistM  = state.distance_m;
+    _smoothInitialized = true;
+    // Compensate camYaw so the camera stays in its current world-space
+    // position when carGroup.rotation.y jumps from 0 to the real heading.
+    // Without this the road appears to swing as the camera angle changes.
+    camYaw -= _smoothHeadingRad;
+    carGroup.rotation.y = _smoothHeadingRad;
+    carGroup.visible = true;
+    renderer.domElement.style.opacity = '1'; // fade in everything at correct heading
+    return;
+  }
+
   const ALPHA = 0.30; // per-frame lerp (≈40ms time-constant at 60fps)
 
   // Shortest-arc heading lerp
@@ -1402,10 +1426,23 @@ function applySmoothState() {
 
   _smoothDistM += (state.distance_m - _smoothDistM) * ALPHA;
 
+  // Smooth world position — lerp toward poll value
+  const prevSX = _smoothWorldX, prevSY = _smoothWorldY;
+  _smoothWorldX += (state.world_x_m - _smoothWorldX) * ALPHA;
+  _smoothWorldY += (state.world_y_m - _smoothWorldY) * ALPHA;
+
+  // Strip lateral slip: project incremental displacement onto forward axis only,
+  // then scroll the road texture in the car's current Three.js forward direction.
+  const cos_h = Math.cos(_smoothHeadingRad), sin_h = Math.sin(_smoothHeadingRad);
+  const dx = _smoothWorldX - prevSX, dy = _smoothWorldY - prevSY;
+  const localFwd = dx * cos_h + dy * sin_h; // signed forward scalar (lateral cancelled)
+  const fwdX = carRestForward.x * cos_h - carRestForward.z * sin_h;
+  const fwdZ = carRestForward.x * sin_h + carRestForward.z * cos_h;
+  _roadOffU -= localFwd * fwdX / ROAD_TILE_SIZE_M;
+  _roadOffV -= localFwd * fwdZ / ROAD_TILE_SIZE_M;
+  roadTexture.offset.set(_roadOffU, _roadOffV);
+
   carGroup.rotation.y = _smoothHeadingRad;
-  // Rotate ground with car: lane markings always appear to run forward.
-  ground.rotation.y = _smoothHeadingRad;
-  roadTexture.offset.set(0, -_smoothDistM / ROAD_TILE_SIZE_M);
 
   const wheelSpinQuat = new THREE.Quaternion()
     .setFromAxisAngle(widthAxisVector, _smoothDistM / WHEEL_ROLLING_RADIUS_M);
@@ -1644,8 +1681,8 @@ window.addEventListener("blur", () => { for (const k in keysDown) keysDown[k] = 
 // it trivial to accidentally command a full-lock turn from a quick key tap
 // at speed. Capped lower and slowed down so normal taps read as a normal
 // road turn instead of a slam-the-wheel maneuver.
-const STEER_RATE_DEG_S = 150; // lock-to-lock in ~1s at the new lower max
-const STEER_MAX_DEG = 150;
+const STEER_RATE_DEG_S = 500;
+const STEER_MAX_DEG = 450;
 const CONTROL_DT_S = 0.1;
 let steeringAngleDeg = 0;
 
