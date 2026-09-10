@@ -591,8 +591,9 @@ scene.add(ground);
     const _mbSize = new THREE.Vector3();
     _mbbox.getSize(_mbSize);
 
-    // Uniform scale: make the model 280 m tall
-    const _mScale  = 280 / _mbSize.y;
+    // Scale so model is 90 m tall — tall enough to be prominent without
+    // overshooting the camera when placed at ±80 m from the road centre.
+    const _mScale  = 90 / _mbSize.y;
     const _tileDep = _mbSize.z * _mScale; // Z footprint of one tile (metres)
     const _tileWid = _mbSize.x * _mScale; // X footprint
 
@@ -607,11 +608,10 @@ scene.add(ground);
       if (n.isMesh) n.material = _mMat;
     });
 
-    // Place mountain origin right at the sound wall edge (x = ±10 m).
-    // Using a fixed value avoids the wide-GLB problem where center = 12 + tileWid/2
-    // ends up hundreds of metres from the road.
-    const _eastX =  10;
-    const _westX = -10;
+    // Place mountain origin at ±80 m — close enough to be clearly visible,
+    // far enough that a 90 m tall model doesn't fly over the camera.
+    const _eastX =  80;
+    const _westX = -80;
 
     // Number of tiles to fill ±650 m with one extra on each end (hidden by fog)
     const _half = Math.ceil(650 / _tileDep) + 1;
