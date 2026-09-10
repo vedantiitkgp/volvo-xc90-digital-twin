@@ -340,7 +340,7 @@ const WHEELBASE = 2.984, LENGTH = 4.95, WIDTH = 2.008, HEIGHT = 1.776, GROUND_CL
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xc8d8e8); // fallback if Sky shader fails
-scene.fog = new THREE.Fog(0xd0c8b0, 80, 600); // Diablo Valley afternoon haze — warm tan
+scene.fog = new THREE.Fog(0xd0c8b0, 120, 900); // Diablo Valley afternoon haze — warm tan
 
 // ── Procedural Bay Area sky (Three.Sky Rayleigh-scattering shader) ──
 const sky = new THREE.Sky();
@@ -584,18 +584,18 @@ scene.add(ground);
     // Y offset so bbox.min sits at road level (y = 0)
     const _yOff = -_mbbox.min.y * _mScale;
 
-    // Tint materials to California summer golden-brown
-    const _tint = new THREE.Color(0xc8a840);
+    // Override ALL materials with a flat earthy tone so the model's own
+    // white/pale texture doesn't blow out under the intense DirectionalLight.
+    // MeshLambertMaterial with a dark brown-gold reads as dry California hills.
+    const _mMat = new THREE.MeshLambertMaterial({ color: 0x6e5820, fog: true });
     proto.traverse(n => {
-      if (!n.isMesh) return;
-      n.material = n.material.clone();
-      if (n.material.color) n.material.color.multiply(_tint);
-      n.material.fog = true;
+      if (n.isMesh) n.material = _mMat;
     });
 
-    // X positions: mountain face starts ~50 m outside sound walls on each side
-    const _eastX =  50 + _tileWid * 0.5;
-    const _westX = -(50 + _tileWid * 0.5);
+    // Fixed X offset: mountains start 60 m from the road centre so they are
+    // clearly visible without being too close. Tile width still pushes center outward.
+    const _eastX =  60 + _tileWid * 0.3;
+    const _westX = -(60 + _tileWid * 0.3);
 
     // Number of tiles to fill ±650 m with one extra on each end (hidden by fog)
     const _half = Math.ceil(650 / _tileDep) + 1;
@@ -1896,8 +1896,8 @@ window.addEventListener("resize", () => {
   }
 
   // Fog closes in at speed — closer horizon → rushing sensation
-  scene.fog.near = 80  - _sf * 38;   // 80 m stopped → 42 m at 85 mph
-  scene.fog.far  = 600 - _sf * 190;  // 600 m stopped → 410 m at 85 mph
+  scene.fog.near = 120 - _sf * 40;   // 120 m stopped → 80 m at 85 mph
+  scene.fog.far  = 900 - _sf * 280;  // 900 m stopped → 620 m at 85 mph
 
   // ── Bird wing flaps + lazy soaring drift ──────────────────────────
   _birds.forEach(b => {
