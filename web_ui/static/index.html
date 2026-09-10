@@ -469,6 +469,7 @@ function switchSeat(seat) {
 // declaration line runs is a hard error, not just undefined.
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.localClippingEnabled = true;
 renderer.setSize(window.innerWidth, window.innerHeight);
 // A glTF model (like the real one loaded below) is authored assuming a
 // specific color-management pipeline -- without this, Three.js renders
@@ -605,9 +606,18 @@ scene.add(ground);
     const _bCx = _mbbox.getCenter(new THREE.Vector3()).x * _mScale;
     const _bCz = _mbbox.getCenter(new THREE.Vector3()).z * _mScale;
 
-    // Material override — dark earthy tone, no relation to original GLB colour
-    const _mMat = new THREE.MeshLambertMaterial({ color: 0x2e2408, fog: true });
-    proto.traverse(n => { if (n.isMesh) n.material = _mMat; });
+    // Two materials with clipping planes so GLB terrain never extends onto the road.
+    // Three.js clips where dot(normal, point) + constant < 0.
+    // East side: keep x ≥ 8 → clip x < 8 → normal=(1,0,0), constant=-8
+    const _mMatE = new THREE.MeshLambertMaterial({
+      color: 0x2e2408, fog: true,
+      clippingPlanes: [ new THREE.Plane(new THREE.Vector3(1, 0, 0), -8) ]
+    });
+    // West side: keep x ≤ -8 → clip x > -8 → normal=(-1,0,0), constant=-8
+    const _mMatW = new THREE.MeshLambertMaterial({
+      color: 0x2e2408, fog: true,
+      clippingPlanes: [ new THREE.Plane(new THREE.Vector3(-1, 0, 0), -8) ]
+    });
 
     // Visual centre of mountain range at ±200 m — prevents any tile from
     // clipping overhead even when the GLB has wide/deep geometry.
@@ -619,17 +629,19 @@ scene.add(ground);
     for (let i = -_half; i <= _half; i++) {
       const z = i * _tileDep;
 
-      // East — centre bbox on _eastX / z
+      // East — centre bbox on _eastX / z; apply east clipping material
       const e = proto.clone(true);
       e.scale.set(_mScale, _mScale, _mScale);
       e.position.set(_eastX - _bCx, _yOff, z - _bCz);
+      e.traverse(n => { if (n.isMesh) n.material = _mMatE; });
       scene.add(e);
 
-      // West — rotated 180°, so X centre offset is negated
+      // West — rotated 180°, X offset negated; apply west clipping material
       const w = proto.clone(true);
       w.scale.set(_mScale, _mScale, _mScale);
       w.rotation.y = Math.PI;
       w.position.set(_westX + _bCx, _yOff, z - _bCz);
+      w.traverse(n => { if (n.isMesh) n.material = _mMatW; });
       scene.add(w);
     }
   });
