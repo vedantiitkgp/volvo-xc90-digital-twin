@@ -619,10 +619,10 @@ scene.add(ground);
       clippingPlanes: [ new THREE.Plane(new THREE.Vector3(-1, 0, 0), -22) ]
     });
 
-    // Visual centre of mountain range at ±200 m — prevents any tile from
-    // clipping overhead even when the GLB has wide/deep geometry.
-    const _eastX =  200;
-    const _westX = -200;
+    // Visual centre of mountain range at ±80 m — close to the barrier,
+    // clipping planes at ±22 m prevent terrain overlapping the road.
+    const _eastX =  80;
+    const _westX = -80;
 
     const _half = Math.ceil(650 / _tileDep) + 1;
 
