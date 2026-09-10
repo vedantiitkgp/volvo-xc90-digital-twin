@@ -562,16 +562,9 @@ const roadMesh = new THREE.Mesh(
   new THREE.MeshStandardMaterial({ map: roadTexture, roughness: 0.95 })
 );
 roadMesh.rotation.x = -Math.PI / 2;
-roadMesh.position.y = 0.01; // 1 cm above ground plane — prevents z-fighting
 scene.add(roadMesh);
 
-// ── Surrounding terrain — California dry golden soil on both sides ────────
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
-  new THREE.MeshLambertMaterial({ color: 0x8a7840, fog: true })
-);
-ground.rotation.x = -Math.PI / 2;
-scene.add(ground);
+// No surrounding ground plane — mountains fill both sides of the road directly.
 
 // ── I-680 Diablo Valley mountains — real GLB tiled continuously ──────────
 // rugged_mountain_landscape.glb is loaded once, scaled to ~280 m peak height,
