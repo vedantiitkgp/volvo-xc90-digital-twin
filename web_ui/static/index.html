@@ -548,13 +548,27 @@ function buildRoadTexture() {
 }
 const roadTexture = buildRoadTexture();
 roadTexture.wrapS = roadTexture.wrapT = THREE.RepeatWrapping;
-const ROAD_REPEAT = 100; // 1200 m / 100 = 12 m tile matches I-680 lane markings
-roadTexture.repeat.set(ROAD_REPEAT, ROAD_REPEAT);
-const GROUND_SIZE = 1200; // large enough that the scrolling texture (below) never visibly wraps during normal driving
-const ROAD_TILE_SIZE_M = GROUND_SIZE / ROAD_REPEAT; // meters per texture repeat, for scrolling it by real distance traveled
+const ROAD_REPEAT = 100;          // 100 tiles × 12 m = 1200 m long
+const GROUND_SIZE = 1200;
+const ROAD_WIDTH_M = 14;          // 3 lanes × 3.7 m + shoulders ≈ 14 m
+const ROAD_TILE_SIZE_M = GROUND_SIZE / ROAD_REPEAT; // 12 m per V-tile
+
+// 1 tile wide (fills the 14 m road exactly), 100 tiles long
+roadTexture.repeat.set(1, ROAD_REPEAT);
+
+// ── Narrow road strip — only the freeway lanes, 14 m wide ────────────────
+const roadMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(ROAD_WIDTH_M, GROUND_SIZE),
+  new THREE.MeshStandardMaterial({ map: roadTexture, roughness: 0.95 })
+);
+roadMesh.rotation.x = -Math.PI / 2;
+roadMesh.position.y = 0.01; // 1 cm above ground plane — prevents z-fighting
+scene.add(roadMesh);
+
+// ── Surrounding terrain — California dry golden soil on both sides ────────
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
-  new THREE.MeshStandardMaterial({ map: roadTexture, roughness: 1 })
+  new THREE.MeshLambertMaterial({ color: 0x8a7840, fog: true })
 );
 ground.rotation.x = -Math.PI / 2;
 scene.add(ground);
@@ -1673,17 +1687,13 @@ function applySmoothState() {
   _smoothWorldX += (state.world_x_m - _smoothWorldX) * ALPHA;
   _smoothWorldY += (state.world_y_m - _smoothWorldY) * ALPHA;
 
-  // Road-stripe scroll driven by live speed_mph, not lerped world position.
-  // World position only updates at the 10 Hz poll rate, so at high speed the
-  // old approach produced visibly stuttering stripes.  Converting mph → m/frame
-  // gives a continuous, instantly-responsive scroll that scales cleanly with speed.
+  // Road-stripe scroll: V-direction only, driven by live speed_mph.
+  // Now that the road is a fixed 14 m strip (not an infinite tiled plane),
+  // U stays at 0 — the lane markings are always centred on the strip.
   const cos_h = Math.cos(_smoothHeadingRad), sin_h = Math.sin(_smoothHeadingRad);
-  const fwdX = carRestForward.x * cos_h - carRestForward.z * sin_h;
-  const fwdZ = carRestForward.x * sin_h + carRestForward.z * cos_h;
   const _frameDistM = (state.speed_mph ?? 0) * (0.447 / 60); // mph → m per frame @60 fps
-  _roadOffU -= _frameDistM * fwdX / ROAD_TILE_SIZE_M;
-  _roadOffV -= _frameDistM * fwdZ / ROAD_TILE_SIZE_M;
-  roadTexture.offset.set(_roadOffU, _roadOffV);
+  _roadOffV -= _frameDistM / ROAD_TILE_SIZE_M;
+  roadTexture.offset.set(0, _roadOffV);
 
   carGroup.rotation.y = _smoothHeadingRad;
 
