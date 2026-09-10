@@ -564,7 +564,15 @@ const roadMesh = new THREE.Mesh(
 roadMesh.rotation.x = -Math.PI / 2;
 scene.add(roadMesh);
 
-// No surrounding ground plane — mountains fill both sides of the road directly.
+// Dark ground plane — eliminates the white-sky floor visible between road and mountains.
+// Color matches the mountain material (0x6e5820) so it blends seamlessly.
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
+  new THREE.MeshLambertMaterial({ color: 0x6e5820, fog: true })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.01; // just below road strip
+scene.add(ground);
 
 // ── I-680 Diablo Valley mountains — real GLB tiled continuously ──────────
 // rugged_mountain_landscape.glb is loaded once, scaled to ~280 m peak height,
@@ -599,10 +607,10 @@ scene.add(roadMesh);
       if (n.isMesh) n.material = _mMat;
     });
 
-    // Fixed X offset: mountains start 60 m from the road centre so they are
-    // clearly visible without being too close. Tile width still pushes center outward.
-    const _eastX =  60 + _tileWid * 0.3;
-    const _westX = -(60 + _tileWid * 0.3);
+    // Anchor inner edge of each mountain tile at x = ±12 m (just outside sound walls).
+    // Center = inner edge + half tile width.
+    const _eastX =  12 + _tileWid * 0.5;
+    const _westX = -(12 + _tileWid * 0.5);
 
     // Number of tiles to fill ±650 m with one extra on each end (hidden by fog)
     const _half = Math.ceil(650 / _tileDep) + 1;
