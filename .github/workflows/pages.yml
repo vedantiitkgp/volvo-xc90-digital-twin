@@ -28,6 +28,8 @@ jobs:
           mkdir -p _site/models
           cp web_ui/static/index.html _site/index.html
           cp web_ui/static/models/volvo_xc90_inscription.glb _site/models/
+          cp web_ui/static/models/maple_tree.glb _site/models/
+          cp web_ui/static/models/rugged_mountain_landscape.glb _site/models/
 
       - uses: actions/configure-pages@v5
 
