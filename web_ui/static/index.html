@@ -486,14 +486,14 @@ renderer.domElement.style.transition = 'opacity 0.25s ease';
 // this is exterior/ambient-only lighting, so dialing it down brightens the
 // body paint less without touching the engine bay's separately-lit look.
 // I-680 afternoon lighting: golden California sun from WSW
-// Hemisphere: warm golden-white sky, tan/golden ground bounce from dry hills
-scene.add(new THREE.HemisphereLight(0xfde8b0, 0x8a7040, 0.65));
-// Key sun — afternoon WSW, warm golden-white
-const sun = new THREE.DirectionalLight(0xfff2c8, 2.6);
+// Hemisphere: softer ambient — reduced so mountains read clearly
+scene.add(new THREE.HemisphereLight(0xc8b890, 0x6a5030, 0.35));
+// Key sun — pulled down to 0.9 so it doesn't bleach the mountain GLB
+const sun = new THREE.DirectionalLight(0xffe8b0, 0.9);
 sun.position.copy(_sunVec).multiplyScalar(80);
 scene.add(sun);
-// Cool eastern fill (sky opposite the sun)
-const fill = new THREE.DirectionalLight(0x9bbde0, 0.4);
+// Cool eastern fill
+const fill = new THREE.DirectionalLight(0x8aadcc, 0.25);
 fill.position.set(8, 4, 4);
 scene.add(fill);
 
