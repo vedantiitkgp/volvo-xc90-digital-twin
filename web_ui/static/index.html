@@ -607,10 +607,11 @@ scene.add(ground);
       if (n.isMesh) n.material = _mMat;
     });
 
-    // Anchor inner edge of each mountain tile at x = ±12 m (just outside sound walls).
-    // Center = inner edge + half tile width.
-    const _eastX =  12 + _tileWid * 0.5;
-    const _westX = -(12 + _tileWid * 0.5);
+    // Place mountain origin right at the sound wall edge (x = ±10 m).
+    // Using a fixed value avoids the wide-GLB problem where center = 12 + tileWid/2
+    // ends up hundreds of metres from the road.
+    const _eastX =  10;
+    const _westX = -10;
 
     // Number of tiles to fill ±650 m with one extra on each end (hidden by fog)
     const _half = Math.ceil(650 / _tileDep) + 1;
