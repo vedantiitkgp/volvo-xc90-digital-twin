@@ -608,15 +608,15 @@ scene.add(ground);
 
     // Two materials with clipping planes so GLB terrain never extends onto the road.
     // Three.js clips where dot(normal, point) + constant < 0.
-    // East side: keep x ≥ 8 → clip x < 8 → normal=(1,0,0), constant=-8
+    // East side: keep x ≥ 22 → clip x < 22 → normal=(1,0,0), constant=-22
     const _mMatE = new THREE.MeshLambertMaterial({
       color: 0x2e2408, fog: true,
-      clippingPlanes: [ new THREE.Plane(new THREE.Vector3(1, 0, 0), -8) ]
+      clippingPlanes: [ new THREE.Plane(new THREE.Vector3(1, 0, 0), -22) ]
     });
-    // West side: keep x ≤ -8 → clip x > -8 → normal=(-1,0,0), constant=-8
+    // West side: keep x ≤ -22 → clip x > -22 → normal=(-1,0,0), constant=-22
     const _mMatW = new THREE.MeshLambertMaterial({
       color: 0x2e2408, fog: true,
-      clippingPlanes: [ new THREE.Plane(new THREE.Vector3(-1, 0, 0), -8) ]
+      clippingPlanes: [ new THREE.Plane(new THREE.Vector3(-1, 0, 0), -22) ]
     });
 
     // Visual centre of mountain range at ±200 m — prevents any tile from
