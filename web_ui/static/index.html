@@ -592,9 +592,9 @@ scene.add(ground);
     const _mbSize = new THREE.Vector3();
     _mbbox.getSize(_mbSize);
 
-    // Scale to 160 m tall. At x=±200 m that's arctan(160/200)=39° elevation —
-    // prominent ridgeline, still well below overhead at road level.
-    const _mScale  = 160 / _mbSize.y;
+    // Scale to 80 m tall. At x=±200 m that's arctan(80/200)=22° elevation —
+    // clearly visible background ridgeline, no overhead clip.
+    const _mScale  = 80 / _mbSize.y;
     const _tileDep = _mbSize.z * _mScale;
 
     // Y offset: bbox bottom sits at road level
