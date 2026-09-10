@@ -339,7 +339,7 @@ document.getElementById("btn-engine").onclick = () => sendAction("toggle_engine_
 const WHEELBASE = 2.984, LENGTH = 4.95, WIDTH = 2.008, HEIGHT = 1.776, GROUND_CLEARANCE = 0.236;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xc8d8e8); // fallback if Sky shader fails
+scene.background = new THREE.Color(0x8a7040); // fallback if Sky shader fails
 scene.fog = new THREE.Fog(0xd0c8b0, 120, 900); // Diablo Valley afternoon haze — warm tan
 
 // ── Procedural Bay Area sky (Three.Sky Rayleigh-scattering shader) ──
@@ -347,10 +347,10 @@ const sky = new THREE.Sky();
 sky.scale.setScalar(9000);
 scene.add(sky);
 const _skyU = sky.material.uniforms;
-_skyU['turbidity'].value        = 2.8;   // slight marine-layer haze
-_skyU['rayleigh'].value         = 1.4;   // blue scatter
-_skyU['mieCoefficient'].value   = 0.004;
-_skyU['mieDirectionalG'].value  = 0.82;
+_skyU['turbidity'].value        = 9.0;   // thick haze — eliminates white horizon glare
+_skyU['rayleigh'].value         = 0.8;   // less aggressive blue scatter
+_skyU['mieCoefficient'].value   = 0.012; // broader sun diffusion
+_skyU['mieDirectionalG'].value  = 0.78;
 // I-680 Diablo Valley: ~3 pm PDT summer afternoon — sun WSW at ~42° elevation
 // Coords 37.82°N 121.92°W; azimuth ≈ 248° (nearly due west, slight south)
 const _sunVec = new THREE.Vector3();
@@ -565,10 +565,10 @@ roadMesh.rotation.x = -Math.PI / 2;
 scene.add(roadMesh);
 
 // Dark ground plane — eliminates the white-sky floor visible between road and mountains.
-// Color matches the mountain material (0x6e5820) so it blends seamlessly.
+// Color matches the mountain material (0x2e2408) so it blends seamlessly.
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
-  new THREE.MeshLambertMaterial({ color: 0x6e5820, fog: true })
+  new THREE.MeshLambertMaterial({ color: 0x2e2408, fog: true })
 );
 ground.rotation.x = -Math.PI / 2;
 ground.position.y = -0.01; // just below road strip
@@ -602,7 +602,7 @@ scene.add(ground);
     // Override ALL materials with a flat earthy tone so the model's own
     // white/pale texture doesn't blow out under the intense DirectionalLight.
     // MeshLambertMaterial with a dark brown-gold reads as dry California hills.
-    const _mMat = new THREE.MeshLambertMaterial({ color: 0x6e5820, fog: true });
+    const _mMat = new THREE.MeshLambertMaterial({ color: 0x2e2408, fog: true });
     proto.traverse(n => {
       if (n.isMesh) n.material = _mMat;
     });
