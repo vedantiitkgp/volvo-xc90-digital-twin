@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>XC90 Digital Twin</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #0b0d10; color: #e8eaed; font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
+  html, body { margin: 0; height: 100%; background: #c8d8e8; color: #e8eaed; font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
   #scene { position: absolute; inset: 0; }
   #hud {
     position: absolute; top: 12px; left: 12px;
@@ -155,6 +155,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/objects/Sky.js"></script>
 <script>
 // When running locally: keep API = "" (same-origin).
 // Deployed backend: https://volvo-xc90-sim.onrender.com
@@ -338,10 +339,28 @@ document.getElementById("btn-engine").onclick = () => sendAction("toggle_engine_
 const WHEELBASE = 2.984, LENGTH = 4.95, WIDTH = 2.008, HEIGHT = 1.776, GROUND_CLEARANCE = 0.236;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x11141a);
-scene.fog = new THREE.Fog(0x11141a, 20, 90); // pushed out for actual driving distance/speed
+scene.background = new THREE.Color(0xc8d8e8); // fallback if Sky shader fails
+scene.fog = new THREE.Fog(0xd0c8b0, 80, 600); // Diablo Valley afternoon haze — warm tan
 
-const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 150);
+// ── Procedural Bay Area sky (Three.Sky Rayleigh-scattering shader) ──
+const sky = new THREE.Sky();
+sky.scale.setScalar(9000);
+scene.add(sky);
+const _skyU = sky.material.uniforms;
+_skyU['turbidity'].value        = 2.8;   // slight marine-layer haze
+_skyU['rayleigh'].value         = 1.4;   // blue scatter
+_skyU['mieCoefficient'].value   = 0.004;
+_skyU['mieDirectionalG'].value  = 0.82;
+// I-680 Diablo Valley: ~3 pm PDT summer afternoon — sun WSW at ~42° elevation
+// Coords 37.82°N 121.92°W; azimuth ≈ 248° (nearly due west, slight south)
+const _sunVec = new THREE.Vector3();
+_sunVec.setFromSphericalCoords(1,
+  THREE.MathUtils.degToRad(48),   // polar from zenith (90 − 42° elevation)
+  THREE.MathUtils.degToRad(248)   // azimuth WSW
+);
+_skyU['sunPosition'].value.copy(_sunVec);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 12000);
 let camDist = 7.5, camYaw = 0.7, camPitch = 0.45;
 let interiorMode = false;
 let interiorYaw = 0, interiorPitch = 0; // look-around offsets in interior mode
@@ -466,12 +485,16 @@ renderer.domElement.style.transition = 'opacity 0.25s ease';
 // Kept lower than the engine bay's own dedicated point lights (below) --
 // this is exterior/ambient-only lighting, so dialing it down brightens the
 // body paint less without touching the engine bay's separately-lit look.
-scene.add(new THREE.HemisphereLight(0xaad4ff, 0x2a2d30, 0.9));
-const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-sun.position.set(6, 10, 4);
+// I-680 afternoon lighting: golden California sun from WSW
+// Hemisphere: warm golden-white sky, tan/golden ground bounce from dry hills
+scene.add(new THREE.HemisphereLight(0xfde8b0, 0x8a7040, 0.65));
+// Key sun — afternoon WSW, warm golden-white
+const sun = new THREE.DirectionalLight(0xfff2c8, 2.6);
+sun.position.copy(_sunVec).multiplyScalar(80);
 scene.add(sun);
-const fill = new THREE.DirectionalLight(0xbcd6ff, 0.35);
-fill.position.set(-5, 4, -6);
+// Cool eastern fill (sky opposite the sun)
+const fill = new THREE.DirectionalLight(0x9bbde0, 0.4);
+fill.position.set(8, 4, 4);
 scene.add(fill);
 
 // Open drivable surface with a lane-marking pattern, not a fixed track --
@@ -479,19 +502,53 @@ scene.add(fill);
 // isn't a real constraint here. A tiled canvas texture reads as pavement +
 // lane markings without needing an actual road-network geometry.
 function buildRoadTexture() {
+  // One tile = 12 m × 12 m (ROAD_REPEAT tiles across GROUND_SIZE).
+  // I-680: 3 lanes × 3.7 m = 11.1 m + 0.45 m shoulder each side ≈ 12 m.
+  // Lane dashes: 3 m painted / 9 m gap  →  top 25 % of tile is dash, rest is gap.
+  const W = 512, H = 512;
   const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = 128;
+  canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#2a2d31";
-  ctx.fillRect(0, 0, 128, 128);
-  ctx.fillStyle = "#d8d8d0";
-  ctx.fillRect(60, 12, 8, 40);
-  ctx.fillRect(60, 76, 8, 40);
+
+  // Weathered asphalt — blue-grey, not pure black
+  ctx.fillStyle = "#2b2d33";
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle lane-center darkening gives the lanes visual depth
+  ctx.fillStyle = "#272930";
+  const laneW = Math.round(W * 0.295); // one lane ≈ 29.5 % of tile width
+  const laneL = Math.round(W * 0.075); // left shoulder ends at ~7.5 %
+  ctx.fillRect(laneL,           0, laneW, H);
+  ctx.fillRect(laneL + laneW,   0, laneW, H);
+  ctx.fillRect(laneL + laneW*2, 0, laneW, H);
+
+  // Shoulders — slightly lighter concrete/compacted gravel
+  ctx.fillStyle = "#383b42";
+  ctx.fillRect(0,       0, laneL,              H); // left shoulder
+  ctx.fillRect(W-laneL, 0, laneL,              H); // right shoulder
+
+  const lw = 6;           // line width in px  (≈ 15 cm at this scale)
+  const mk = "#dcddd5";   // slightly warm white (aged paint)
+
+  // Solid white edge lines (run full tile height)
+  ctx.fillStyle = mk;
+  ctx.fillRect(laneL,       0, lw, H);
+  ctx.fillRect(W-laneL-lw, 0, lw, H);
+
+  // Dashed yellow centre dividers (3 m dash, 9 m gap → top 25 % of tile)
+  const dashLen = Math.round(H * 0.25);
+  const dashOff = Math.round(H * 0.04); // small top-margin so dash isn't at pixel 0
+  const d1 = laneL + laneW;
+  const d2 = laneL + laneW * 2;
+  ctx.fillStyle = "#e8d870"; // yellow lane paint
+  ctx.fillRect(d1, dashOff, lw, dashLen);
+  ctx.fillRect(d2, dashOff, lw, dashLen);
+
   return new THREE.CanvasTexture(canvas);
 }
 const roadTexture = buildRoadTexture();
 roadTexture.wrapS = roadTexture.wrapT = THREE.RepeatWrapping;
-const ROAD_REPEAT = 150;
+const ROAD_REPEAT = 100; // 1200 m / 100 = 12 m tile matches I-680 lane markings
 roadTexture.repeat.set(ROAD_REPEAT, ROAD_REPEAT);
 const GROUND_SIZE = 1200; // large enough that the scrolling texture (below) never visibly wraps during normal driving
 const ROAD_TILE_SIZE_M = GROUND_SIZE / ROAD_REPEAT; // meters per texture repeat, for scrolling it by real distance traveled
@@ -501,6 +558,73 @@ const ground = new THREE.Mesh(
 );
 ground.rotation.x = -Math.PI / 2;
 scene.add(ground);
+
+// ── I-680 Diablo Valley environment ─────────────────────────────────
+// I-680 runs NNW–SSE through San Ramon / Danville / Walnut Creek.
+// East:  Diablo Range + Mt Diablo (1173 m) — prominent lone peak NE
+// West:  San Ramon Ridge / Las Trampas Ridge (lower, closer)
+// Season: late-summer California — all golden/tan dry grass, zero green.
+//
+// Ridgeline strategy: many small overlapping half-ellipsoids in a Z-chain.
+// 60 m Z-step with sz=130 means each hill overlaps its neighbour by 70 m,
+// producing a smooth continuous ridge instead of isolated blobs.
+
+const _hGeo  = new THREE.SphereGeometry(1, 18, 10, 0, Math.PI*2, 0, Math.PI*0.5);
+const _gold  = new THREE.MeshLambertMaterial({ color: 0xc8a040, fog: true }); // golden dry grass
+const _tan   = new THREE.MeshLambertMaterial({ color: 0xaa8838, fog: true }); // darker tan/brown
+const _burnt = new THREE.MeshLambertMaterial({ color: 0x8e7030, fog: true }); // burnt-earth ravines
+const _ridge = new THREE.MeshLambertMaterial({ color: 0x7a5e28, fog: true }); // shadowed ridge faces
+function hill(x,y,z,sx,sy,sz,mat){
+  const m = new THREE.Mesh(_hGeo, mat);
+  m.scale.set(sx,sy,sz); m.position.set(x,y,z); scene.add(m);
+}
+
+// ── East foreground: Diablo Range — 20 hills, 60 m step, sz=130 (large overlap)
+// x≈165–195 m, peaks 65–82 m above road → 20–27° elevation from driver's eye
+const _emats = [_gold,_tan,_gold,_burnt,_tan,_gold,_ridge,_gold,_tan,_gold,
+                _burnt,_tan,_gold,_gold,_burnt,_tan,_gold,_ridge,_tan,_gold];
+[-600,-540,-480,-420,-360,-300,-240,-180,-120,-60,0,60,120,180,240,300,360,420,480,540]
+  .forEach((z,i) => hill(178+(i%3-1)*18, -6-(i%4)*3, z, 105+(i%3)*12, 68+(i%5)*5, 130, _emats[i]));
+
+// ── East background: deeper Diablo Range layer — 12 hills, 100 m step
+[-600,-500,-400,-300,-200,-100,0,100,200,300,400,500]
+  .forEach((z,i) => hill(390+(i%3)*18, -20, z, 160+(i%2)*20, 95+(i%3)*10, 165,
+                          [_tan,_burnt,_tan,_gold,_ridge,_tan][i%6]));
+
+// ── Mt Diablo — tall isolated peak NE (Danville/Walnut Creek viewpoint)
+// Broad lower slopes (two overlapping base ellipsoids)
+hill(530,-18,-660, 230,170,270, _tan);
+hill(505,-18,-645, 140,185,155, _burnt);
+// Narrow summit cone sitting atop the base
+const _dTop = new THREE.Mesh(
+  new THREE.ConeGeometry(1, 1, 16),
+  new THREE.MeshLambertMaterial({ color: 0x9a7832, fog: true })
+);
+_dTop.scale.set(48, 240, 48);
+_dTop.position.set(518, 152, -652);
+scene.add(_dTop);
+
+// ── West foreground: San Ramon Ridge — 20 hills, 60 m step (lower/closer)
+const _wmats = [_gold,_tan,_burnt,_gold,_tan,_gold,_burnt,_tan,_gold,_ridge,
+                _gold,_tan,_gold,_burnt,_tan,_gold,_ridge,_gold,_tan,_burnt];
+[-600,-540,-480,-420,-360,-300,-240,-180,-120,-60,0,60,120,180,240,300,360,420,480,540]
+  .forEach((z,i) => hill(-155-(i%3-1)*14, -5-(i%4)*2, z, 96+(i%3)*9, 55+(i%4)*4, 118, _wmats[i]));
+
+// ── West background: Las Trampas Ridge — 11 hills, 110 m step
+[-600,-490,-380,-270,-160,-50,60,170,280,390,500]
+  .forEach((z,i) => hill(-318-(i%2)*28, -16, z, 145+(i%2)*15, 70+(i%3)*8, 155,
+                          [_gold,_tan,_burnt][i%3]));
+
+// ── Concrete sound walls — I-680 has noise-barrier walls flanking both sides.
+// 4 m tall, 0.4 m wide, span full road length.  Tan/grey aged concrete.
+const _wallMat = new THREE.MeshLambertMaterial({ color: 0x9a9488, fog: true });
+const _wallGeo = new THREE.BoxGeometry(1, 1, 1);
+[-1, 1].forEach(side => {
+  const w = new THREE.Mesh(_wallGeo, _wallMat);
+  w.scale.set(0.4, 4.2, 1200);   // width × height × length
+  w.position.set(side * 9.2, 2.1, 0);  // y=2.1 → bottom at y=0 (road level)
+  scene.add(w);
+});
 
 // Floating origin: the car's mesh (with all its fine local detail -- door
 // gaps, trim lines, stitching) never actually moves in render/world space,
